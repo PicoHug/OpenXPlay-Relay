@@ -176,6 +176,34 @@ class TranscodingOutputTest {
         output.close()
     }
 
+    @Test fun hevcOnlySessionPassesHevcAndTranscodesAvcToHevc() {
+        val inner = RecordingOutput(reportedCapabilities = capabilities("hvc1.1.6.L123.B0"))
+        val decisions = mutableListOf<VideoCompatibility.Decision>()
+        val pipelines = mutableListOf<Pipeline>()
+        val output = TranscodingOutput(inner, VideoPipeline.Factory { _, target, listener ->
+            assertEquals(VideoCodec.H265, target.codec)
+            assertEquals("hvc1.1.6.L123.B0", target.codecString)
+            Pipeline(listener).also { pipelines.add(it) }
+        }, report = { _, decision, _ -> decisions.add(decision) })
+        output.open(Host())
+        val hevc = VideoFormat.create(ScreenId.MAIN, VideoCodec.H265, org.openxplay.direlay.bridge.hevcConfig)
+        output.onVideoFormat(ScreenId.MAIN, hevc)
+        assertEquals(VideoCompatibility.Mode.PASSTHROUGH, decisions.last().mode)
+        assertTrue(pipelines.isEmpty())
+        output.onVideoFrame(frame())
+        assertEquals(1, inner.frames.size)
+        output.onVideoFormat(ScreenId.MAIN, avc())
+        assertEquals(VideoCompatibility.Mode.TRANSCODE, decisions.last().mode)
+        val pipeline = pipelines.single()
+        output.onVideoFrame(frame())
+        assertEquals(1, pipeline.frames.size)
+        pipeline.listener.format(hevc)
+        assertSame(hevc, inner.videoFormats.last().second)
+        pipeline.listener.frame(frame())
+        assertEquals(2, inner.frames.size)
+        output.close()
+    }
+
     @Test fun transportCanRequireAvcEvenWhenReceiverAlsoListsHevc() {
         val inner = RecordingOutput(reportedCapabilities = capabilities("avc1.42E01F", "hvc1.1.6.L120.B0"))
         var codec: VideoCodec? = null

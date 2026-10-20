@@ -538,4 +538,9 @@
     <string name="picture_force_h265">强制 H.265</string>
     <string name="picture_force_h264">强制 H.264</string>
     <string name="picture_video_codec_hint">自动：车机浏览器能硬件解码 H.265 时使用 H.265，出问题时自动改用 H.264。强制选项用于测试。</string>
+    <string name="carlink_hevc">Carlink H.265</string>
+    <string name="carlink_hevc_off">关闭</string>
+    <string name="carlink_hevc_signal">在 M4 中声明（实验）</string>
+    <string name="carlink_hevc_stream_only">自动（推荐）</string>
+    <string name="carlink_hevc_hint">车机声明支持 H.265 时，「自动」直接发送 H.265；「关闭」始终发送 H.264。修改后请重新连接 Carlink。</string>
 </resources>

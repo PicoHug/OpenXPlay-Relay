@@ -21,6 +21,7 @@ import com.shilapi.xcertplay.AirPlayPersistence
 import org.openxplay.direlay.bridge.DiPlayInput
 import org.openxplay.direlay.video.*
 import org.openxplay.stream.core.VideoCodec
+import org.openxplay.stream.core.DecoderSupport
 import org.openxplay.stream.core.VideoCodecDecision
 import org.openxplay.stream.core.VideoCodecPolicy
 import org.openxplay.stream.core.VideoCodecRestartLimiter
@@ -299,7 +300,7 @@ class RelayRuntime(private val context: Context,
     @Volatile var carlinkFailed = false
         private set
     // Sensor opt-in belongs to a socket generation and waits for the explicit reconnect action.
-    private data class CarlinkConfig(val enabled: Boolean, val permitted: Boolean, val name: String, val model: String, val blocked: Boolean, val trace: Boolean)
+    private data class CarlinkConfig(val enabled: Boolean, val permitted: Boolean, val name: String, val model: String, val blocked: Boolean, val trace: Boolean, val hevc: ClinkHevcMode)
     private var carlinkConfig: CarlinkConfig? = null
     private val carlinkBlock = CarlinkWifiDirectBlock()
     @Volatile private var carlink: ClinkOutput? = null
@@ -449,6 +450,7 @@ class RelayRuntime(private val context: Context,
     @Volatile private var codecRestartPending = false
     @Volatile private var observedCodecSetting: VideoCodecSetting? = null
     @Volatile private var immediateCodecChange = false
+    @Volatile private var carlinkDecoders: List<DecoderSupport> = emptyList()
     private var hevcFailed = false
     private var rememberedCodec: VideoCodec? = null
     private var rememberedCodecLoaded = false
@@ -469,7 +471,8 @@ class RelayRuntime(private val context: Context,
             rememberedCodecLoaded = true
         }
         return relayVideoCodec(settingsStore.snapshot.value?.videoCodec ?: VideoCodecSetting.AUTO,
-            displayPolicy.activeOutputs, carlinkConnected, hevcFailed, rememberedCodec)
+            displayPolicy.activeOutputs, carlinkRequiresAvc(carlinkConnected, carlinkDecoders), hevcFailed, rememberedCodec,
+            carlinkHevc = carlinkConnected && VideoCompatibility.hasHevc(carlinkDecoders))
     }
     private fun refreshVideoCodec() {
         val setting = settingsStore.snapshot.value?.videoCodec ?: return
@@ -601,7 +604,7 @@ class RelayRuntime(private val context: Context,
         val requested = CarlinkConfig(settings.carlinkOutput || settings.bothOutputs, permitted,
             settings.carlinkDeviceName, settings.carlinkDeviceModel,
             carlinkBlock.blocked(CarlinkConnectionPolicy.enabled(settings),
-                settingsStore.carlinkWifiDirectConflict(settings), autoStartSessions.tracker.running), settings.carlinkTrace)
+                settingsStore.carlinkWifiDirectConflict(settings), autoStartSessions.tracker.running), settings.carlinkTrace, settings.carlinkHevc)
         if (!force && requested == carlinkConfig && !carlinkRestartPending) return
         carlinkConfig = requested
         if (carlinkRetiring) { carlinkRestartPending = true; return }
@@ -644,7 +647,7 @@ class RelayRuntime(private val context: Context,
         val output = ClinkOutput(link, sessionDiagnostics.pinProvider, sessionDiagnostics.trustStore,
             deviceId = id, deviceName = requested.name,
             vehicleData = settings.vehicleInformation,
-            trace = trace, mediaTap = if (settings.carlinkTrace) carlinkMediaCapture else null,
+            hevc = requested.hevc, trace = trace, mediaTap = if (settings.carlinkTrace) carlinkMediaCapture else null,
             listener = object : ClinkListener {
                 override fun state(state: ClinkState) {
                     sessionDiagnostics.state(state)
@@ -714,8 +717,16 @@ class RelayRuntime(private val context: Context,
             val reason = VideoCompatibility.reportKey(format, decision, failed).reason
             Log.i("DiRelayCarlink", "video decision=${decision.mode} input=${format.codecString} size=${format.width}x${format.height} target=${decision.target?.codecString} reason=$reason failed=$failed")
         }, observeCapabilities = { caps ->
-            Log.i("DiRelayCarlink", "video decoders=${caps?.decoders?.joinToString { it.codecString }.orEmpty()}")
-        }, deliveryCodecs = setOf(org.openxplay.stream.core.VideoCodec.H264)))
+            val decoders = caps?.decoders.orEmpty()
+            if (carlinkDecoders != decoders) {
+                carlinkDecoders = decoders
+                try { setup.execute { refreshVideoCodec() } }
+                catch (_: java.util.concurrent.RejectedExecutionException) { }
+            }
+            Log.i("DiRelayCarlink", "video decoders=${decoders.joinToString { it.codecString }}")
+        // Only advertised HEVC sessions accept H.265; Off keeps H.264 delivery.
+        }, deliveryCodecs = if (requested.hevc == ClinkHevcMode.OFF) setOf(org.openxplay.stream.core.VideoCodec.H264)
+            else setOf(org.openxplay.stream.core.VideoCodec.H264, org.openxplay.stream.core.VideoCodec.H265)))
     }
 
     @Volatile private var carlinkVideoFailed = false

@@ -544,4 +544,9 @@
     <string name="picture_force_h265">Force H.265</string>
     <string name="picture_force_h264">Force H.264</string>
     <string name="picture_video_codec_hint">Automatic uses H.265 when the head unit’s browser can decode it in hardware and falls back to H.264 if it fails. The forced choices are for testing.</string>
+    <string name="carlink_hevc">Carlink H.265</string>
+    <string name="carlink_hevc_off">Off</string>
+    <string name="carlink_hevc_signal">Signal in M4 (experimental)</string>
+    <string name="carlink_hevc_stream_only">Automatic (default)</string>
+    <string name="carlink_hevc_hint">Automatic sends H.265 to head units that advertise support; Off always sends H.264. Reconnect Carlink after changing.</string>
 </resources>

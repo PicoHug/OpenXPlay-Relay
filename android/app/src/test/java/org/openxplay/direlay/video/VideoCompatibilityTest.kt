@@ -18,6 +18,13 @@ internal fun avc() = VideoFormat.create(ScreenId.MAIN, VideoCodec.H264, avcConfi
 internal fun high() = VideoFormat.create(ScreenId.MAIN, VideoCodec.H264, avcConfig.also { it[1] = 100; it[2] = 0; it[3] = 31 })
 
 class VideoCompatibilityTest {
+    @Test fun experimentalCarlinkMain41DecoderAllowsHevcPassthrough() {
+        val input = VideoFormat.create(ScreenId.MAIN, VideoCodec.H265, hevcConfig.also { it[12] = 123 })
+        val avcOnly = capabilities("avc1.42E01F").decoders
+        assertEquals(TRANSCODE, VideoCompatibility.decide(input, avcOnly).mode)
+        assertEquals(PASSTHROUGH, VideoCompatibility.decide(input,
+            avcOnly + DecoderSupport("hvc1.1.6.L123.B0", true)).mode)
+    }
     @Test fun policyTable() {
         val high = high()
         val hevc = VideoFormat.create(ScreenId.MAIN, VideoCodec.H265, hevcConfig)

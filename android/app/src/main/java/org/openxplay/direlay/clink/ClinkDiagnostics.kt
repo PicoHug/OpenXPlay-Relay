@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutionException
 /** Only structured, credential-free values cross the diagnostics boundary. */
 fun interface ClinkDiagnostics {
     fun emit(event: ClinkDiagnostic)
+    fun traceLink(stage: String, fields: Map<String, String>) { }
     fun handoff(ssid: String, passphraseLength: Int) { }
 
     companion object {

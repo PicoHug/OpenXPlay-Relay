@@ -151,6 +151,11 @@ class AndroidClinkLink(context: Context, private val deviceId: String,
                         val identity = record.getServiceData(ParcelUuid(UUID.fromString(BleCodec.IDENTITY_SERVICE))) ?: return
                         val name = record.getServiceData(ParcelUuid(UUID.fromString(BleCodec.NAME_SERVICE))) ?: byteArrayOf()
                         val advertisement = BleCodec.advertisement(identity, name)
+                        diagnostics.traceLink("ble_advertisement", mapOf(
+                            "major" to advertisement.major.toString(), "minor" to advertisement.minor.toString(),
+                            "serial" to advertisement.serial.toString(), "carId" to advertisement.carId,
+                            "modelId" to advertisement.modelId, "vendorData" to advertisement.vendorData,
+                            "name" to advertisement.name))
                         diagnostics.emit(ClinkStage.BLE_PEER)
                         result.complete(scan.device to advertisement.carId)
                     } catch (_: IllegalArgumentException) { /* Ignore malformed advertisements. */ }
@@ -263,6 +268,7 @@ class AndroidClinkLink(context: Context, private val deviceId: String,
                 if (reply != null) {
                     run.peerKey = key
                     run.peerChoice = choice
+                    diagnostics.traceLink("ble_reply_name", mapOf("name" to reply.name))
                     diagnostics.emit(ClinkDiagnostic.Reply(reply.type))
                     diagnostics.emit(ClinkDiagnostic.Exchange(reply.freq))
                     result.complete(reply)

@@ -21,6 +21,18 @@ class SettingsDraftSaverTest {
         30, false, true, false, null)
     private val scope = object : SaverScope { override fun canBeSaved(value: Any) = true }
     private fun bundle(value: RelaySettings): Bundle = with(relaySettingsSaver(base)) { requireNotNull(scope.save(value)) }
+    @Test fun carlinkHevcOptionsUseAutomaticOffSignalOrder() {
+        assertEquals(listOf("STREAM_ONLY", "OFF", "SIGNAL"), org.openxplay.stream.clink.ClinkHevcMode.entries.map { it.name })
+        assertEquals(org.openxplay.stream.clink.ClinkHevcMode.STREAM_ONLY, base.carlinkHevc)
+    }
+    @Test fun everyCarlinkHevcDraftSurvivesRotation() {
+        for (mode in org.openxplay.stream.clink.ClinkHevcMode.entries) {
+            val value = base.copy(carlinkHevc = mode)
+            assertEquals(value, relaySettingsSaver(base).restore(bundle(value)))
+        }
+        val old = bundle(base); old.remove("carlinkHevc")
+        assertEquals(base, relaySettingsSaver(base).restore(old))
+    }
     @Test fun everyVideoCodecDraftSurvivesRotationAndOldDraftsKeepTheBase() {
         for (codec in VideoCodecSetting.entries) {
             val value = base.copy(videoCodec = codec)

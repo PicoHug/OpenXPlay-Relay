@@ -129,6 +129,12 @@ fun developerView(runtime: RelayRuntime): DeveloperView {
         SettingsRow(stringResource(R.string.vehicle_title), stringResource(R.string.dev_sample_open), R.drawable.symbol_car, openVehicle)
         SmallHeading(stringResource(R.string.carlink_debug))
         Toggle(stringResource(R.string.carlink_trace_enabled), draft.carlinkTrace, { draft = draft.copy(carlinkTrace = it) })
+        SmallHeading(stringResource(R.string.carlink_hevc))
+        Options(listOf(stringResource(R.string.carlink_hevc_stream_only), stringResource(R.string.carlink_hevc_off),
+            stringResource(R.string.carlink_hevc_signal)), draft.carlinkHevc.ordinal) {
+            draft = draft.copy(carlinkHevc = org.openxplay.stream.clink.ClinkHevcMode.entries[it])
+        }
+        Hint(stringResource(R.string.carlink_hevc_hint))
         if (debug != null) CarlinkDebugPanel(debug, draft.carlinkTrace)
         SmallHeading(stringResource(R.string.car_view_areas))
         if (debug != null) ViewAreasPanel(debug)

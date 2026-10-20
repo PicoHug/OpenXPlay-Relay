@@ -6,14 +6,20 @@ package org.openxplay.direlay.video
 import org.openxplay.direlay.settings.VideoCodecSetting
 import org.openxplay.stream.core.*
 
+/** Until Carlink reports its session decoder, Automatic retains the H.264 startup choice. */
+fun carlinkRequiresAvc(connected: Boolean, decoders: List<DecoderSupport>): Boolean =
+    connected && !VideoCompatibility.hasHevc(decoders)
+
 /** Without a main-screen viewer, Automatic keeps the last codec it chose so a page reload costs no CarPlay restart. */
 fun relayVideoCodec(setting: VideoCodecSetting, outputs: List<OutputCapabilities>, requiresAvc: Boolean,
-    hevcFailed: Boolean, remembered: VideoCodec?): VideoCodecDecision = when {
+    hevcFailed: Boolean, remembered: VideoCodec?, carlinkHevc: Boolean = false): VideoCodecDecision = when {
     setting == VideoCodecSetting.H264 -> VideoCodecDecision(VideoCodec.H264, "setting-h264")
     setting == VideoCodecSetting.H265 -> VideoCodecDecision(VideoCodec.H265, "setting-h265")
     hevcFailed -> VideoCodecDecision(VideoCodec.H264, "hevc-failed")
     !requiresAvc && outputs.none { ScreenId.MAIN in it.displays } && remembered != null -> VideoCodecDecision(remembered, "remembered-codec")
-    else -> VideoCodecPolicy.resolve(outputs, requiresAvc)
+    else -> VideoCodecPolicy.resolve(outputs, requiresAvc).let { decision ->
+        if (carlinkHevc && decision.codec == VideoCodec.H265) decision.copy(reason = "carlink-hevc") else decision
+    }
 }
 
 class HevcFailureTracker {

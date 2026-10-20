@@ -15,6 +15,18 @@ class RelayVideoCodecTest {
         failed: Boolean = false, remembered: VideoCodec? = null) =
         relayVideoCodec(setting, outputs, avc, failed, remembered)
 
+    @Test fun carlinkRequiresAvcOnlyUntilItsSessionReportsHevc() {
+        assertTrue(carlinkRequiresAvc(true, emptyList()))
+        assertTrue(carlinkRequiresAvc(true, capabilities("avc1.42E01F").decoders))
+        assertFalse(carlinkRequiresAvc(true, hevc.decoders))
+        assertFalse(carlinkRequiresAvc(false, emptyList()))
+        val decision = relayVideoCodec(VideoCodecSetting.AUTO, listOf(hevc),
+            carlinkRequiresAvc(true, hevc.decoders), false, null, carlinkHevc = true)
+        assertEquals(VideoCodecDecision(VideoCodec.H265, "carlink-hevc"), decision)
+        val browser = capabilities("avc1.42E01F")
+        assertEquals(VideoCodec.H264, relayVideoCodec(VideoCodecSetting.AUTO, listOf(hevc, browser),
+            false, false, null, carlinkHevc = true).codec)
+    }
     @Test fun forcedChoicesOverrideReceiversCarlinkAndFailure() {
         for (outputs in listOf(emptyList(), listOf(hevc), listOf(capabilities("avc1.42E01F"))))
             for (avc in listOf(false, true)) for (failed in listOf(false, true)) {

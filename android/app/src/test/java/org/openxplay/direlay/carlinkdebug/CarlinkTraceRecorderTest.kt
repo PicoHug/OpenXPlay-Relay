@@ -64,6 +64,25 @@ class CarlinkTraceRecorderTest {
             assertTrue(recorder.snapshot().isEmpty()); assertEquals(0, directory.listFiles()!!.size)
         } finally { recorder.close(); directory.deleteRecursively() }
     }
+    @Test fun vehicleIdentificationIsTraceOnly() {
+        val directory = Files.createTempDirectory("carlink-identification").toFile()
+        val mirrored = mutableListOf<String>()
+        val recorder = CarlinkTraceRecorder(directory, { mirrored += it })
+        val delegated = mutableListOf<ClinkDiagnostic>()
+        try {
+            val diagnostics = TracingClinkDiagnostics(ClinkDiagnostics { delegated += it }, recorder)
+            diagnostics.traceLink("ble_advertisement", mapOf("major" to "1", "minor" to "9", "serial" to "7",
+                "carId" to "001122", "modelId" to "3344", "vendorData" to "5566", "name" to "Car"))
+            diagnostics.traceLink("ble_reply_name", mapOf("name" to "Head Unit"))
+            recorder.awaitIdle()
+            assertTrue(delegated.isEmpty()); assertTrue(mirrored.isEmpty())
+            val content = recorder.currentFile!!.readText()
+            assertTrue(content.contains("ble_advertisement")); assertTrue(content.contains("Head Unit"))
+            assertFalse(content.contains("psk"))
+            TracingClinkDiagnostics(ClinkDiagnostics { error("trace must bypass delegate") }, ClinkTrace.NONE)
+                .traceLink("ble_reply_name", mapOf("name" to "Disabled"))
+        } finally { recorder.close(); directory.deleteRecursively() }
+    }
     @Test fun redactionAndDisabledPort() {
         val directory = Files.createTempDirectory("carlink-redaction").toFile()
         val recorder = CarlinkTraceRecorder(directory)

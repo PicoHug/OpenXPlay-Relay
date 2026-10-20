@@ -4,6 +4,7 @@
 package org.openxplay.direlay.settings
 
 import android.content.Context
+import org.openxplay.stream.clink.ClinkHevcMode
 import com.shilapi.xcertplay.AirPlayPersistence
 import com.shilapi.xcertplay.orchestration.MfiTarget
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
@@ -64,6 +65,7 @@ data class RelaySettings(
     val plugins: Boolean = false,
     val pluginsEnabled: List<String> = emptyList(),
     val carlinkTrace: Boolean = false,
+    val carlinkHevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
     val carplayResolution: CarPlayResolution = CarPlayResolution.AUTO,
     val carplayScreenWidth: CarPlayScreenWidth = CarPlayScreenWidth.MM200,
     val viewAreas: Boolean = true,
@@ -201,6 +203,7 @@ class RelaySettingsStore(private val context: Context) : AutoCloseable, org.open
             mode,
             relay.getString("iphoneAddress", null),
             carlinkTrace = relay.getBoolean("carlinkTrace", false),
+            carlinkHevc = ClinkHevcMode.entries.firstOrNull { it.name == relay.getString("carlinkHevc", null) } ?: ClinkHevcMode.STREAM_ONLY,
             viewAreas = relay.getBoolean("carPlayViewAreas", true),
             car = CarSelection(relay.getString("carBrand", "").orEmpty(), relay.getString("carBrandText", "").orEmpty(),
                 relay.getString("carModel", "").orEmpty(), relay.getString("carModelText", "").orEmpty()).normalized(),
@@ -249,6 +252,7 @@ class RelaySettingsStore(private val context: Context) : AutoCloseable, org.open
             .putBoolean("vehicleInformation", settings.vehicleInformation)
             .putBoolean("carlinkAutoReconnect", settings.carlinkAutoReconnect)
             .putBoolean("carlinkTrace", settings.carlinkTrace)
+            .putString("carlinkHevc", settings.carlinkHevc.name)
             .putBoolean("carPlayViewAreas", settings.viewAreas)
             .putString("carBrand", settings.car.brand).putString("carBrandText", settings.car.brandText)
             .putString("carModel", settings.car.model).putString("carModelText", settings.car.modelText)
