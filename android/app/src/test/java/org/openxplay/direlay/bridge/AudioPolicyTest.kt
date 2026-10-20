@@ -48,6 +48,22 @@ class AudioPolicyTest {
         val slots = listOf("media", "speechrecognition", "telephony", "default").map { AudioPolicy.stream(AudioStreamId(100, it)) }
         assertEquals(slots.size, slots.toSet().size)
     }
+    @Test fun anAppCallOnTheMainStreamReachesTheVoiceChannelButASystemSoundDoesNot() {
+        // WeChat calls arrive as type 100 with audioType "default" and were silent (2026-10-20).
+        val call = AudioStreamId(100, "default")
+        assertTrue(AudioPolicy.voiceChannel(call))
+        // The buffered stream carries short system sounds; they must not open the voice channel,
+        // because the head unit mixes them itself and forwarding them ducks the music.
+        assertFalse(AudioPolicy.voiceChannel(AudioStreamId(102, "default")))
+        assertFalse(AudioPolicy.voiceChannel(AudioStreamId(100, "media")))
+        assertFalse(AudioPolicy.voiceChannel(AudioStreamId(100, "alert")))
+        // The call keeps its own slot, so a native telephony call never replaces it.
+        assertNotEquals(AudioPolicy.stream(AudioStreamId(100, "telephony")), AudioPolicy.stream(call))
+        // It is reported as a telephony role, which is what the head unit's voice channel accepts.
+        val source = CarPlayAudioFormat(AudioCodecKind.AAC_LC, 48000, 2, 100, "default")
+        assertEquals(AudioRole.TELEPHONY, AudioPolicy.format(call, source).role)
+        assertEquals(AudioRole.OTHER, AudioPolicy.format(AudioStreamId(102, "default"), source).role)
+    }
     @Test fun pcmSwapPreservesInterleavingAndLeavesBorrowedDataUntouched() {
         val pcm = hex("12 34 fe dc 80 00 7f ff")
         assertArrayEquals(hex("34 12 dc fe 00 80 ff 7f"), AudioPolicy.swap(pcm))
