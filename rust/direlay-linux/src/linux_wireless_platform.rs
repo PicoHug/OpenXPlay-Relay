@@ -296,13 +296,14 @@ impl WirelessPlatform for LinuxWirelessPlatform {
         mfi: Arc<dyn MfiAuthenticator>,
         callbacks: NetworkCallbacks,
     ) -> Result<Arc<dyn NetworkAttachment>> {
-        let config = air_play_config(
+        let mut config = air_play_config(
             info.bssid
                 .clone()
                 .ok_or_else(|| std::io::Error::other("AP BSSID unavailable"))?,
             self.bluetooth.local_address()?,
             self.session,
         );
+        self.input.configure_display(&mut config.main);
         let input = self.input.clone();
         let sink = self.sink.clone();
         let events = self.events.clone();

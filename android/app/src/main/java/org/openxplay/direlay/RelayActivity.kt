@@ -206,8 +206,9 @@ class RelayActivity : androidx.activity.ComponentActivity() {
             settings, wireless, missing.isEmpty() && !needsVpn, readyIdentity, !materialChecked, valid,
             phase, started || starting, runtime.status.failure != null ||
                 (settings.carlinkOutput && runtime.carlinkFailed) ||
-                (!settings.carlinkOutput && runtime.serverState.startsWith("Web receiver unavailable")), selection, autoStartPaused = runtime.autoStartGate.paused,
-            currentWifi = cachedWifi, sharedWifiReady = !wireless || settings.wirelessNetwork.choice != org.openxplay.direlay.settings.WirelessNetworkChoice.EXISTING_WIFI || runtime.currentSharedWifi(settings, cachedWifi) != null))
+                ((!settings.carlinkOutput || settings.bothOutputs) && runtime.serverReason != null), selection, autoStartPaused = runtime.autoStartGate.paused,
+            webReason = runtime.serverReason, webListening = runtime.serverState.startsWith("TLS enabled"),
+            carNetworkAvailable = runtime.carIpv4.isNotEmpty(), currentWifi = cachedWifi, sharedWifiReady = !wireless || settings.wirelessNetwork.choice != org.openxplay.direlay.settings.WirelessNetworkChoice.EXISTING_WIFI || runtime.currentSharedWifi(settings, cachedWifi) != null))
         val carAddresses = runtime.carIpv4
         val urls = runtime.receiverUrls.filterNot { it.contains("://localhost:") }
             .filter { url -> carAddresses.any { url.contains("://$it:") } }

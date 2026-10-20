@@ -928,7 +928,22 @@ impl AirPlaySession {
         Ok(())
     }
 }
+impl AirPlaySession {
+    pub fn show_view_area(&self, index: usize) -> bool {
+        let count = self.config.main.view_areas.as_ref().map_or(0, Vec::len);
+        index < count
+            && self
+                .send_command(&AirPlayInfoPlist::view_area_command(
+                    index as u32,
+                    count as u32,
+                ))
+                .unwrap_or(false)
+    }
+}
 impl SessionControl for AirPlaySession {
+    fn show_view_area(&self, index: usize) -> bool {
+        AirPlaySession::show_view_area(self, index)
+    }
     fn send_touch(&self, contacts: &[AirPlayContact]) -> Result<bool> {
         AirPlaySession::send_touch(self, contacts)
     }
@@ -1110,11 +1125,16 @@ mod event_tests {
         (session, socket)
     }
     fn logged_session() -> (Arc<AirPlaySession>, Arc<Socket>, Arc<Listener>) {
+        configured_session(AirPlayConfig::linux_receiver("id".into(), "bt".into()))
+    }
+    fn configured_session(
+        config: AirPlayConfig,
+    ) -> (Arc<AirPlaySession>, Arc<Socket>, Arc<Listener>) {
         let listener = Arc::new(Listener::default());
         let key = AirPlayCrypto::ed25519_generate().unwrap();
         let session = AirPlaySession::new(
             Arc::new(Socket::default()),
-            AirPlayConfig::linux_receiver("id".into(), "bt".into()),
+            config,
             Arc::new(AirPlayIdentity {
                 private_key: key.private_key,
                 public_key: key.public_key,
@@ -1148,6 +1168,36 @@ mod event_tests {
                 BplistCodec::decode(&m.body).unwrap()
             })
             .collect()
+    }
+    #[test]
+    fn show_view_area_uses_the_encrypted_event_command() {
+        let mut config = AirPlayConfig::linux_receiver("id".into(), "bt".into());
+        config.main.view_areas = Some(vec![
+            AirPlayViewArea {
+                width: 1280,
+                height: 720,
+                origin_x: 0,
+                origin_y: 0,
+                dock_edge: None,
+            },
+            AirPlayViewArea {
+                width: 960,
+                height: 720,
+                origin_x: 0,
+                origin_y: 0,
+                dock_edge: None,
+            },
+        ]);
+        let (session, socket, _) = configured_session(config);
+        assert!(!session.show_view_area(1));
+        ready(&session, &socket);
+        assert!(!session.show_view_area(2));
+        assert!(SessionControl::show_view_area(&*session, 1));
+        assert_eq!(
+            commands(&socket),
+            vec![AirPlayInfoPlist::view_area_command(1, 2)]
+        );
+        session.close().unwrap();
     }
     #[test]
     fn normalized_touch_and_key_releases_keep_event_order() {

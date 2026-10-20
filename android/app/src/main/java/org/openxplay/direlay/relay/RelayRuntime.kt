@@ -67,6 +67,7 @@ class RelayRuntime(private val context: Context,
     val input = DiPlayInput(
         applyFrameRate = { fps -> negotiatedFps = fps; AirPlayPersistence.saveFps(context, fps) },
         restartCarPlay = { setup.execute { sessionActions.action("restart") } },
+        automaticHevc = { settingsStore.snapshot.value?.videoCodec == VideoCodecSetting.AUTO && appliedVideoDecision.codec == VideoCodec.H265 },
     )
     private val bundledPlugins = org.openxplay.direlay.plugins.BundledPlugins(context.applicationContext)
     fun installedPlugins() = runCatching {
@@ -267,6 +268,8 @@ class RelayRuntime(private val context: Context,
 
     @Volatile var serverState = "Starting web receiver…"
         private set
+    @Volatile var serverReason: WebStartReason? = null
+        private set
     @Volatile var ipv4: Set<String> = emptySet()
         private set
     /** Addresses a head unit can reach; Wi-Fi Direct groups (p2p-*) only carry the iPhone link. */
@@ -386,12 +389,14 @@ class RelayRuntime(private val context: Context,
     private var carlinkRetiring = false
     private var carlinkRestartPending = false
 
+    private var webStarting = false
+    private var lastWebFailure: String? = null
     private var bindRetry: java.util.concurrent.ScheduledFuture<*>? = null
     private var urlRefresh: java.util.concurrent.ScheduledFuture<*>? = null
     val identityStore = IdentityStore(context.noBackupFilesDir) {
         AirPlayPersistence.saveMfiTarget(context, MfiTarget.LOCAL)
     }
-    val tlsStore = TlsStore(context.noBackupFilesDir) { restartWeb(); adminService.restartTls() }
+    val tlsStore = TlsStore(context.noBackupFilesDir) { refreshWebTls(); adminService.restartTls() }
     private val sessionController = RelaySessionActions(context.applicationContext, this)
     val sessionActions: RelayActions get() = sessionController
     val adminService = org.openxplay.direlay.admin.RelayAdminService(context.applicationContext, this,
@@ -423,9 +428,10 @@ class RelayRuntime(private val context: Context,
         setup.scheduleWithFixedDelay({
             try {
                 ipv4 = ipv4Addresses(); carIpv4 = ipv4Addresses(includeIphoneLink = false)
-                if (tlsStore.ensureDefault(ipv4, adminHosts()) && webEnabled) restartWeb()
+                if (tlsStore.ensureDefault(carIpv4, adminHosts())) updateWebTls()
             }
             catch (_: Exception) { /* Retain the last interface snapshot. */ }
+            if (!closed && webEnabled && web == null && !webStarting && bindRetry == null) startWeb()
         }, 0, 5, TimeUnit.SECONDS)
     }
 
@@ -441,12 +447,39 @@ class RelayRuntime(private val context: Context,
     @Volatile var appliedVideoDecision = videoDecision
         private set
     @Volatile private var codecRestartPending = false
-    // The iPhone's H.265 through DiPlay on Android is not verified yet (OpenXPlay-15d), so this relay
-    // always asks for H.264; the receiver page shows the codec in use.
-    private fun currentVideoCodecDecision(): VideoCodecDecision = VideoCodecPolicy.resolve(displayPolicy.activeOutputs,
-        carlinkConnected).let { if (it.codec == VideoCodec.H265) VideoCodecDecision(VideoCodec.H264, "relay-h264-only") else it }
+    @Volatile private var observedCodecSetting: VideoCodecSetting? = null
+    @Volatile private var immediateCodecChange = false
+    private var hevcFailed = false
+    private var rememberedCodec: VideoCodec? = null
+    private var rememberedCodecLoaded = false
+    private fun currentVideoCodecDecision(): VideoCodecDecision {
+        input.hevcFailure()?.let { failure ->
+            if (!hevcFailed) {
+                hevcFailed = true
+                immediateCodecChange = true
+                Log.w("OpenXPlay Relay", "H.265 failed: $failure")
+            }
+        }
+        if (!rememberedCodecLoaded) {
+            rememberedCodec = when (preferences.getString("automaticVideoCodec", null)) {
+                "H265" -> VideoCodec.H265
+                "H264" -> VideoCodec.H264
+                else -> null
+            }
+            rememberedCodecLoaded = true
+        }
+        return relayVideoCodec(settingsStore.snapshot.value?.videoCodec ?: VideoCodecSetting.AUTO,
+            displayPolicy.activeOutputs, carlinkConnected, hevcFailed, rememberedCodec)
+    }
     private fun refreshVideoCodec() {
+        val setting = settingsStore.snapshot.value?.videoCodec ?: return
+        if (observedCodecSetting != null && observedCodecSetting != setting) immediateCodecChange = true
+        observedCodecSetting = setting
         val next = currentVideoCodecDecision()
+        if (setting == VideoCodecSetting.AUTO && next.reason != "remembered-codec" && next.reason != "no-main-screen-output" && next.codec != rememberedCodec) {
+            rememberedCodec = next.codec
+            preferences.edit().putString("automaticVideoCodec", next.codec.name).apply()
+        }
         if (next != videoDecision) {
             if (next.codec != videoDecision.codec) codecRestarts.changed(android.os.SystemClock.elapsedRealtime())
             videoDecision = next
@@ -454,10 +487,12 @@ class RelayRuntime(private val context: Context,
         }
         if (autoStartSessions.tracker.running && !sessionActions.restarting && !startRequest.pending &&
             !codecRestartPending && next.codec != appliedVideoDecision.codec &&
-            codecRestarts.allow(android.os.SystemClock.elapsedRealtime())) {
+            (immediateCodecChange || codecRestarts.allow(android.os.SystemClock.elapsedRealtime()))) {
             codecRestartPending = true
             if (sessionActions.action("restart") != null) codecRestartPending = false
+            else immediateCodecChange = false
         }
+        if (next.codec == appliedVideoDecision.codec) immediateCodecChange = false
     }
     private fun refreshDisplay() {
         // A page can connect before the phone declares its areas; reconsider its latest report once active.
@@ -489,6 +524,8 @@ class RelayRuntime(private val context: Context,
         enqueueCarlink()
         synchronized(this) {
             val decision = currentVideoCodecDecision()
+            observedCodecSetting = settingsStore.snapshot.value?.videoCodec
+            immediateCodecChange = false
             videoDecision = decision
             appliedVideoDecision = decision
             codecRestartPending = false
@@ -703,14 +740,27 @@ class RelayRuntime(private val context: Context,
         catch (_: java.util.concurrent.RejectedExecutionException) { }
     }
 
+    private fun updateWebTls() {
+        web?.updateTls(tlsStore.webContext(carIpv4, adminHosts()))
+    }
+
+    private fun refreshWebTls() {
+        try { setup.execute {
+            if (!closed) runCatching { updateWebTls() }
+                .onFailure { Log.w("OpenXPlay Relay", "TLS update failed", it) }
+        } } catch (_: java.util.concurrent.RejectedExecutionException) { }
+    }
+
     private fun startWeb(bindAttempt: Int = 0) {
         bindRetry = null
+        if (closed || webStarting || web != null) return
+        if (!webEnabled) { serverReason = null; serverState = "Web receiver disabled"; return }
+        webStarting = true
+        val port = configuredWebPort ?: TlsStore.port(true)
         try {
-            tlsStore.ensureDefault(ipv4Addresses(), adminHosts())
-            if (!webEnabled) { serverState = "Web receiver disabled"; return }
-            val ssl = tlsStore.webContext(ipv4Addresses(), adminHosts())
+            carIpv4 = ipv4Addresses(includeIphoneLink = false)
+            val ssl = tlsStore.webContext(carIpv4, adminHosts())
             val root = installReceiver()
-            val port = configuredWebPort ?: TlsStore.port(true)
             val settings = settingsStore.awaitSnapshot()
             val plugins = if (!settings.plugins) null else runCatching {
                 org.openxplay.direlay.plugins.RelayPlugins.configuration(settings, bundledPlugins.root(), context.filesDir)
@@ -728,6 +778,9 @@ class RelayRuntime(private val context: Context,
                 hub.addOutput(TranscodingOutput(destination, MediaCodecPipeline.factory))
             }
             output.awaitListening()
+            if (closed) return
+            serverReason = null
+            lastWebFailure = null
             pluginContext.configure(plugins != null, status.session?.phase == org.openxplay.stream.core.SessionPhase.ACTIVE)
             val assetsState = if (File(root, "receiver/index.html").isFile) "" else "\nReceiver assets missing; build Stream web/dist and rebuild the APK."
             serverState = "TLS enabled · HTTPS/WSS :$port" + assetsState
@@ -740,15 +793,24 @@ class RelayRuntime(private val context: Context,
             }, 0, 5, TimeUnit.SECONDS)
         } catch (failure: Exception) {
             pluginContext.configure(false)
+            serverReason = webStartReason(failure, port)
+            val root = generateSequence<Throwable>(failure) { it.cause }.last()
+            val reason = "$serverReason: ${root.javaClass.name}: ${root.message}"
+            if (reason != lastWebFailure) {
+                Log.w("OpenXPlay Relay", "Web receiver start failed: $reason", failure)
+                lastWebFailure = reason
+            }
             serverState = "Web receiver unavailable: ${failure.message ?: failure.javaClass.simpleName}"
+            receiverUrls = emptyList()
+            urlRefresh?.cancel(false)
+            urlRefresh = null
             web?.let { hub.removeOutput(it.id) }
             web = null
-            // Stream closes sockets asynchronously; give the previous listener time to release its port.
-            val portBusy = generateSequence<Throwable>(failure) { it.cause }.any { it is java.net.BindException }
-            if (!closed && portBusy && bindAttempt < 5) {
-                bindRetry = setup.schedule({ startWeb(bindAttempt + 1) }, 200, TimeUnit.MILLISECONDS)
+            if (!closed && webEnabled) {
+                bindRetry = setup.schedule({ startWeb((bindAttempt + 1).coerceAtMost(4)) },
+                    webStartRetryDelay(bindAttempt), TimeUnit.MILLISECONDS)
             }
-        }
+        } finally { webStarting = false }
     }
 
     private fun installReceiver(): File {
@@ -789,6 +851,7 @@ class RelayRuntime(private val context: Context,
                     pluginContext.configure(false)
                     web?.let { hub.removeOutput(it.id) }
                     web = null
+                    serverReason = null
                     serverState = "Starting web receiver…"
                 }
                 startWeb()

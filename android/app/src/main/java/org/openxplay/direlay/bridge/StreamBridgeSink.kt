@@ -201,6 +201,7 @@ class StreamBridgeSink(
             configs[screen] = format.config
             formats[screen] = format
             sink.videoFormat(screen, format)
+            input.videoFormat(session, screen, format)
             if (!session.active) {
                 session.active = true
                 sink.session(SessionState(session.id, SessionPhase.ACTIVE))
@@ -242,8 +243,9 @@ class StreamBridgeSink(
             missingFormatLogged.remove(screen)
             try {
                 val avcc = Nal.annexBToAvcc(bytes)
-                sink.videoFrame(VideoFrame(screen, session.id, avcc, videoPtsUs(screen, sender, arrival),
-                    Nal.isKeyFrame(avcc, format.codec), arrival))
+                val keyframe = Nal.isKeyFrame(avcc, format.codec)
+                sink.videoFrame(VideoFrame(screen, session.id, avcc, videoPtsUs(screen, sender, arrival), keyframe, arrival))
+                if (keyframe) input.keyframePublished(session, screen)
             } catch (failure: IllegalArgumentException) {
                 invalid(type, failure)
                 return@deliver

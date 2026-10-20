@@ -134,6 +134,10 @@ private fun Modifier.semanticsHeading() = this.then(Modifier.semantics { heading
             Options(CarPlayScreenWidth.entries.map { "${it.mm} mm" },
                 CarPlayScreenWidth.entries.indexOf(draft.carplayScreenWidth)) { draft = draft.copy(carplayScreenWidth = CarPlayScreenWidth.entries[it]) }
             Hint(stringResource(R.string.picture_screen_width_hint))
+            SmallHeading(stringResource(R.string.picture_video_codec))
+            Options(listOf(stringResource(R.string.display_automatic), stringResource(R.string.picture_force_h265), stringResource(R.string.picture_force_h264)),
+                VideoCodecSetting.entries.indexOf(draft.videoCodec)) { draft = draft.copy(videoCodec = VideoCodecSetting.entries[it]) }
+            Hint(stringResource(R.string.picture_video_codec_hint))
             Box(sectionModifier("connection")) { SmallHeading(stringResource(R.string.ui_iphone_connection)) }
             RadioOptions(connectionOptions, if (wireless(draft)) 0 else 1) {
                 val candidate = draft.copy(connectionMode = if (it == 0) ConnectionMode.WIRELESS else ConnectionMode.USB)

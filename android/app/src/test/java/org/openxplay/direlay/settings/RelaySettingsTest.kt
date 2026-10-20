@@ -86,6 +86,26 @@ class RelaySettingsTest {
         }
     }
 
+    @Test fun videoCodecPersistsByNameAndPageChangesPublishToAppListeners() {
+        RelaySettingsStore(context).use { store ->
+            assertEquals(VideoCodecSetting.AUTO, store.awaitSnapshot().videoCodec)
+            val seen = java.util.concurrent.CopyOnWriteArrayList<org.openxplay.stream.web.DisplaySettings>()
+            store.listen { seen.add(it) }.use {
+                for (codec in VideoCodecSetting.entries) {
+                    store.save(store.load().copy(videoCodec = codec))
+                    assertEquals(codec.name, context.getSharedPreferences("direlay", 0).getString("videoCodec", null))
+                    assertEquals(codec, store.load().videoCodec)
+                    assertEquals(codec.wire, store.current().videoCodec)
+                }
+                store.set(store.current().copy(videoCodec = "h265"), org.openxplay.stream.core.Origin("web", "test"))
+                assertEquals(VideoCodecSetting.H265, store.snapshot.value!!.videoCodec)
+                assertEquals("h265", seen.last().videoCodec)
+            }
+        }
+        context.getSharedPreferences("direlay", 0).edit().putString("videoCodec", "unknown").commit()
+        assertEquals(VideoCodecSetting.AUTO, store.load().videoCodec)
+    }
+
     @Test fun screenWidthUsesNewNumericKeyAndIgnoresOldPreference() {
         val preferences = context.getSharedPreferences("direlay", 0)
         preferences.edit().putString("carplayIconSize", "ignored").commit()

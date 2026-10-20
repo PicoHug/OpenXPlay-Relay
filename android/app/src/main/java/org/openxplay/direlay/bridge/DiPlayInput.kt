@@ -9,13 +9,15 @@ import com.shilapi.xcertplay.airplay.AirPlayContact
 import com.shilapi.xcertplay.airplay.CarPlayMediaButton
 import com.shilapi.xcertplay.airplay.SessionControl
 import org.openxplay.stream.core.*
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import org.openxplay.direlay.video.HevcFailureTracker
+import org.openxplay.direlay.video.KeyframeRequests
 import java.util.concurrent.TimeUnit
 
 /** Owns the session fence and serializes all sink callbacks, including replacement and stop. */
-class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val restartCarPlay: () -> Unit = {}) : ProjectionInput, AutoCloseable {
+class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val restartCarPlay: () -> Unit = {},
+    private val automaticHevc: () -> Boolean = { false }, private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 }) : ProjectionInput, AutoCloseable {
     @Volatile override var capabilities = InputCapabilities(
         setOf(VideoCodec.H264, VideoCodec.H265), setOf(ScreenId.MAIN),
         touch = true, keys = setOf(KeyCode.NEXT, KeyCode.PREVIOUS), microphone = false,
@@ -48,14 +50,47 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
     private var current: Session? = null
     private var latest: Session? = null
     private var nextId = 0L
-    private val recovery = ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(16),
-        { task -> Thread(task, "direlay-recovery").apply { isDaemon = true } },
-        ThreadPoolExecutor.AbortPolicy(),
-    )
+    private val health = HevcFailureTracker()
+    fun hevcFailure(): String? = synchronized(gate) {
+        health.watchdog(current?.requests?.waitMs(ScreenId.MAIN.value, nowMs()), automaticHevc() && current?.requestedEnd != true)
+        health.failure
+    }
+    fun expectStop() = synchronized(gate) { current?.requestedEnd = true }
+    internal fun videoFormat(session: Session, screen: ScreenId, format: VideoFormat) = synchronized(gate) {
+        if (current === session && screen == ScreenId.MAIN && format.codec == VideoCodec.H265) health.format(nowMs())
+    }
+    internal fun keyframePublished(session: Session, screen: ScreenId) = synchronized(gate) {
+        if (current === session) session.requests.published(screen.value)
+    }
+    private val recoveryQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val recovery = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "direlay-recovery").apply { isDaemon = true }
+    }.apply { scheduleWithFixedDelay({ flushKeyframes() }, 50, 50, TimeUnit.MILLISECONDS) }
+    private fun flushKeyframes() {
+        val requests = synchronized(gate) {
+            val session = current ?: return
+            if (sink == null) return
+            session.handlers.map { (screen, handler) -> Triple(session, screen, handler) }
+        }
+        for ((session, screen, handler) in requests) {
+            val valid = synchronized(gate) {
+                if (sink == null || current !== session || session.handlers[screen] !== handler) {
+                    recordKeyframe("Screen ${screen.value}: stale request")
+                    false
+                } else session.requests.due(screen.value, nowMs())
+            }
+            if (valid) try {
+                handler()
+                recordKeyframe("Screen ${screen.value}: requested")
+                Log.i(TAG, "Keyframe requested for screen ${screen.value}")
+            } catch (_: Exception) { recordKeyframe("Screen ${screen.value}: request failed") }
+        }
+    }
 
     internal class Session(var id: SessionId, val control: SessionControl) {
         val handlers = mutableMapOf<ScreenId, () -> Unit>()
+        var requests = KeyframeRequests()
+        var requestedEnd = false
         var active = false
         var announced = false
         val audio = mutableSetOf<Int>()
@@ -91,12 +126,11 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
     }
 
     override fun stop() = synchronized(gate) {
-        current?.let { endLocked(it) }
+        current?.let { it.requestedEnd = true; endLocked(it) }
         sink = null
         current = null
         latest = null
         latestContext.clear()
-        recovery.queue.clear()
     }
 
     fun showViewArea(index: Int): Boolean = synchronized(gate) {
@@ -110,7 +144,7 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
      * start and stop without an iPhone leaves no session behind.
      */
     internal fun begin(control: SessionControl): Session = synchronized(gate) {
-        current?.let { endLocked(it) }
+        current?.let { it.requestedEnd = true; endLocked(it) }
         Session(SessionId(++nextId), control).also {
             current = it
             latest = it
@@ -136,6 +170,9 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
             reset()
             session.id = SessionId(++nextId)
             session.active = false
+            session.requests = KeyframeRequests()
+            session.requestedEnd = false
+            health.resetSession()
             session.announced = true
             current = session
             sink?.session(SessionState(session.id, SessionPhase.CONNECTING))
@@ -160,6 +197,7 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
     }
 
     private fun endLocked(session: Session) {
+        health.ended(nowMs(), automaticHevc(), session.requestedEnd)
         session.cleanup()
         session.audio.forEach { sink?.audioFormat(it, null) }
         session.microphoneStreams.forEach { sink?.microphone(it, null) }
@@ -192,30 +230,23 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
                 }
             }
             is ControlEvent.KeyFrameRequest -> {
-                val request = synchronized(gate) {
-                    if (sink == null || current !== session) null
-                    else session.handlers[event.screen]?.let { session.id to it }
+                val accepted = synchronized(gate) {
+                    if (sink == null || current !== session || event.screen !in session.handlers) false
+                    else { session.requests.request(event.screen.value, nowMs()); true }
                 }
-                if (request == null) {
+                if (!accepted) {
                     recordKeyframe("Screen ${event.screen.value}: no recovery handler")
                     Log.w(TAG, "Keyframe request for ${event.screen.value} dropped: no recovery handler")
                     return false
                 }
-                val (id, handler) = request
                 try {
-                    recovery.execute {
-                        val valid = synchronized(gate) {
-                            sink != null && current === session && session.id == id && session.handlers[event.screen] === handler
-                        }
-                        if (valid) try {
-                            handler()
-                            recordKeyframe("Screen ${event.screen.value}: requested")
-                            Log.i(TAG, "Keyframe requested for screen ${event.screen.value}")
-                        } catch (_: Exception) { recordKeyframe("Screen ${event.screen.value}: request failed") }
-                        else recordKeyframe("Screen ${event.screen.value}: stale request")
+                    if (recoveryQueued.compareAndSet(false, true)) recovery.execute {
+                        recoveryQueued.set(false)
+                        flushKeyframes()
                     }
                     true
                 } catch (_: RejectedExecutionException) {
+                    recoveryQueued.set(false)
                     recordKeyframe("Screen ${event.screen.value}: queue full")
                     false
                 }

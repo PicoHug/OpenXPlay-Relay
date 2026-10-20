@@ -96,11 +96,19 @@ impl StreamConnection {
                                 .map_err(std::io::Error::other)?,
                         )
                         .map_err(std::io::Error::other)?;
-                        oxp_wire::write(&mut stream,&oxp_wire::Message::Json(serde_json::json!({"type":"input-capabilities","codecs":["H264","H265"],"screens":[0],"touch":true,"keys":[],"microphone":true,"keyFrameRequests":true,"reconfigure":"RESTART_SESSION"}))).map_err(std::io::Error::other)?;
                         let (tx, rx) = mpsc::sync_channel(128);
                         {
                             let mut s = input.state.lock().unwrap();
-                            for m in s.declarations.values() {
+                            if let Some(settings) = s.declarations.get("display-settings") {
+                                oxp_wire::write(&mut stream, settings)
+                                    .map_err(std::io::Error::other)?;
+                            }
+                            oxp_wire::write(&mut stream,&oxp_wire::Message::Json(serde_json::json!({"type":"input-capabilities","codecs":["H264","H265"],"screens":[0],"touch":true,"keys":[],"microphone":true,"keyFrameRequests":true,"reconfigure":"RESTART_SESSION"}))).map_err(std::io::Error::other)?;
+                            for (_, m) in s
+                                .declarations
+                                .iter()
+                                .filter(|(key, _)| key.as_str() != "display-settings")
+                            {
                                 oxp_wire::write(&mut stream, m).map_err(std::io::Error::other)?;
                             }
                             s.output = Some(tx);
@@ -279,7 +287,7 @@ mod context_wire_tests {
             connection.start().unwrap();
             let (mut peer, _) = listener.accept().unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            for _ in 0..2 {
+            for _ in 0..4 {
                 oxp_wire::read(&mut peer).unwrap().unwrap();
             }
             let client = if opted_in {
@@ -319,5 +327,76 @@ mod context_wire_tests {
             connection.close().unwrap();
             std::fs::remove_file(path).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod display_wire_tests {
+    use super::*;
+    use oxp_wire::Message;
+    use serde_json::json;
+    use std::os::unix::net::UnixListener;
+    #[test]
+    fn fake_consumer_updates_display_settings_and_reconnect_replays_them() {
+        let dir = std::env::temp_dir().join(format!("oxp-display-wire-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stream.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let events = Arc::new(JsonEvents::new(Arc::new(|_| {})));
+        let input = Arc::new(DiPlayInput::new(events.clone()));
+        input.initialize_video_state(&dir);
+        let connection = StreamConnection::new(path, input.clone(), events);
+        connection.receiver_started();
+        connection.start().unwrap();
+        let request = json!({"type":"display-settings","resolution":"native","screenWidth":125,"videoCodec":"h265"});
+        for round in 0..2 {
+            let (mut peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let Some(Message::Json(hello)) = oxp_wire::read(&mut peer).unwrap() else {
+                panic!()
+            };
+            assert_eq!(hello["type"], "hello");
+            let mut settings = None;
+            let mut area = None;
+            for _ in 0..3 {
+                let Some(Message::Json(v)) = oxp_wire::read(&mut peer).unwrap() else {
+                    panic!()
+                };
+                if v["type"] == "display-settings" {
+                    settings = Some(v);
+                } else if v["type"] == "view-area" {
+                    area = Some(v);
+                }
+            }
+            assert!(area.unwrap()["area"].is_null());
+            if round == 0 {
+                assert_eq!(settings.unwrap()["videoCodec"], "auto");
+                let invalid = Message::Json(
+                    json!({"type":"display-settings","resolution":"bad","screenWidth":125,"videoCodec":"h265"}),
+                );
+                assert!(input.control(&invalid).is_err());
+                oxp_wire::write(
+                    &mut peer,
+                    &Message::hello("consumer", "fake", "test").unwrap(),
+                )
+                .unwrap();
+                oxp_wire::write(&mut peer, &Message::Json(request.clone())).unwrap();
+                let Some(Message::Json(reply)) = oxp_wire::read(&mut peer).unwrap() else {
+                    panic!()
+                };
+                assert_eq!(reply, request);
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(dir.join("display.json")).unwrap())
+                        .unwrap();
+                assert_eq!(saved["screenWidth"], 125);
+                // These declarations survive an ordinary session begin/end as well.
+                assert_eq!(input.display_settings().resolution, "native");
+            } else {
+                assert_eq!(settings.unwrap(), request);
+            }
+            let _ = peer.shutdown(Shutdown::Both);
+        }
+        connection.close().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

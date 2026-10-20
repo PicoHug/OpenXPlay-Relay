@@ -236,6 +236,7 @@ impl LinuxRelayAdmin {
         });
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let settings = Settings::load(&options.state_dir)?;
+        input.initialize_video_state(&options.state_dir);
         // The AP stays down for a gap before the next one comes up, also across relay restarts.
         let hotspot_lifetime = Arc::new(crate::hotspot_lifetime::HotspotLifetime::with_down_gap(
             crate::hotspot_lifetime::AP_DOWN_GAP,
@@ -941,6 +942,46 @@ fn clear_carlink_trust(state: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
+fn picture_section() -> Section {
+    Section {
+        id: "picture".into(),
+        title_key: "section.linuxPicture".into(),
+        fields: [
+            (
+                "resolution",
+                vec!["auto", "native", "1080p", "720p", "screen"],
+            ),
+            ("screenWidth", vec!["125", "200", "250", "300"]),
+            ("videoCodec", vec!["auto", "h265", "h264"]),
+        ]
+        .into_iter()
+        .map(|(key, choices)| Field {
+            key: key.into(),
+            field_type: "choice".into(),
+            label_key: format!("field.linux.{key}"),
+            hint_key: (key == "screenWidth").then(|| "hint.linux.screenWidth".into()),
+            options: Some(
+                choices
+                    .into_iter()
+                    .map(|value| FieldOption {
+                        value: if key == "screenWidth" {
+                            serde_json::json!(value.parse::<u32>().unwrap())
+                        } else {
+                            value.into()
+                        },
+                        label_key: format!("option.linux.{key}.{value}"),
+                        hint_key: None,
+                        illustration: None,
+                    })
+                    .collect(),
+            ),
+            visible_when: None,
+            min: None,
+            max: None,
+        })
+        .collect(),
+    }
+}
 pub fn settings_schema() -> Vec<Section> {
     let fields: Vec<Field> = [
         ("networkMode", "choice"),
@@ -1040,6 +1081,7 @@ pub fn settings_schema() -> Vec<Section> {
     })
     .collect();
     vec![
+        picture_section(),
         Section {
             id: "connection".into(),
             title_key: "section.connection".into(),
@@ -1326,6 +1368,10 @@ impl RelayAdmin for LinuxRelayAdmin {
             serde_json::json!({"ssid": n.ssid, "hasPassword": !n.password.is_empty(), "current": current.as_ref() == Some(&n.ssid)})
         ).collect::<Vec<_>>();
         values.insert("sharedWifiNetworks".into(), serde_json::json!(networks));
+        let display = oxp_wire::display_settings(&self.input.display_settings());
+        for key in ["resolution", "screenWidth", "videoCodec"] {
+            values.insert(key.into(), display[key].clone());
+        }
         let schema = settings_schema();
         values.retain(|key, _| {
             schema
@@ -1341,7 +1387,28 @@ impl RelayAdmin for LinuxRelayAdmin {
             installed_plugins: crate::plugins::installed(&self.options.plugins_root),
         }
     }
-    fn update(&self, values: Values) -> AdminUpdate {
+    fn update(&self, mut values: Values) -> AdminUpdate {
+        let mut display = oxp_wire::display_settings(&self.input.display_settings());
+        let mut picture_keys = Vec::new();
+        for key in ["resolution", "screenWidth", "videoCodec"] {
+            if let Some(value) = values.remove(key) {
+                display[key] = value;
+                picture_keys.push(key);
+            }
+        }
+        let picture_changed = !picture_keys.is_empty();
+        // The admin page shows errors by field key.
+        let picture_errors = |keys: &[&str]| {
+            AdminUpdate::Errors(
+                keys.iter()
+                    .map(|k| (k.to_string(), "error.linuxPicture".to_string()))
+                    .collect(),
+            )
+        };
+        let picture = match oxp_wire::decode_display_settings(&display) {
+            Ok(picture) => picture,
+            Err(_) => return picture_errors(&picture_keys),
+        };
         let validate_plugins = values.contains_key("pluginsEnabled");
         let mut current = self.settings.lock().unwrap();
         match update_settings(&current, values) {
@@ -1405,6 +1472,12 @@ impl RelayAdmin for LinuxRelayAdmin {
                 if let Some(operation) = operation {
                     if let Err(error) = self.defer(operation) {
                         return AdminUpdate::Errors(BTreeMap::from([("settings".into(), error)]));
+                    }
+                }
+                if picture_changed {
+                    if let Err(e) = self.input.update_display_settings(picture) {
+                        self.events.emit("error", &serde_json::json!({"message": format!("picture settings not applied: {e}")}));
+                        return picture_errors(&picture_keys);
                     }
                 }
                 if let Err(e) = next.save(&self.options.state_dir) {
@@ -1975,6 +2048,38 @@ esac
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn picture_settings_live_outside_rollback_settings() {
+        let (a, dir) = fake();
+        assert!(a
+            .settings()
+            .schema
+            .iter()
+            .any(|s| s.id == "picture" && s.fields.len() == 3));
+        let update =
+            serde_json::json!({"resolution":"native","screenWidth":250,"videoCodec":"h264"});
+        assert!(matches!(
+            a.update(update.as_object().unwrap().clone()),
+            AdminUpdate::AppliedNow
+        ));
+        assert_eq!(a.settings().values["resolution"], "native");
+        assert_eq!(a.input.display_settings().screen_width, 250);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert!(stored.get("resolution").is_none());
+        Settings::load(&dir).unwrap();
+        assert!(matches!(
+            a.update(
+                serde_json::json!({"screenWidth":150})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            ),
+            AdminUpdate::Errors(_)
+        ));
+        assert_eq!(a.input.display_settings().screen_width, 250);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn network_values_are_secret_free_and_updates_preserve_omitted_passwords() {
         let (a, dir) = fake();
         a.settings.lock().unwrap().shared_wifi_networks = vec![SharedWifiNetwork {
@@ -2234,7 +2339,11 @@ esac
         assert_eq!(contract["values"]["pluginsEnabled"], serde_json::json!([]));
         assert_eq!(contract["installedPlugins"][0]["name"]["zh-CN"], "宠物");
         assert_eq!(contract["installedPlugins"][0]["nonCommercialAssets"], true);
-        assert_eq!(contract["schema"][1]["id"], "plugins");
+        assert!(contract["schema"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "plugins"));
         for invalid in [
             serde_json::json!(["org.missing"]),
             serde_json::json!(["../escape"]),

@@ -41,7 +41,7 @@ class GeneratedTlsTest {
         assertNotNull(store.sslContext())
         assertTrue(requireNotNull(store.fingerprint()).matches(Regex("([0-9A-F]{2}:){31}[0-9A-F]{2}")))
     }
-    @Test fun unchangedSetAndProcessReloadReuseCertificateButAddedOrRemovedAddressRegenerates() {
+    @Test fun unchangedSetAndProcessReloadReuseCertificateAddedAddressRegeneratesRemovedOneDoesNot() {
         val root = temporary.newFolder()
         val store = TlsStore(root)
         store.ensureDefault(setOf("10.0.0.2", "192.168.49.1"))
@@ -51,9 +51,10 @@ class GeneratedTlsTest {
         assertTrue(store.ensureDefault(setOf("10.0.0.3")))
         assertNotEquals(first, store.fingerprint())
         val second = store.fingerprint()
-        assertTrue(store.ensureDefault(emptySet()))
-        assertNotEquals(second, store.fingerprint())
-        assertEquals(listOf(listOf(2, "localhost"), listOf(2, "openxplay-android.local")), certificate(root).subjectAlternativeNames.toList())
+        assertFalse(store.ensureDefault(emptySet()))
+        assertEquals(second, store.fingerprint())
+        assertEquals(setOf("10.0.0.3", "10.0.0.2", "192.168.49.1"),
+            certificate(root).subjectAlternativeNames.filter { it[0] == 7 }.map { it[1] }.toSet())
         assertEquals(1, root.listFiles().orEmpty().count { it.name.startsWith(".tls-generated-generation-") })
     }
     @Test fun importedCertificateWinsAndRemovingItRestoresGeneratedTls() {

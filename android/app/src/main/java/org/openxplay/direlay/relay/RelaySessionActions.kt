@@ -54,6 +54,7 @@ class RelaySessionActions(private val context: Context, private val runtime: Rel
         else -> "error.invalid"
     }
     private fun stop() {
+        runtime.input.expectStop()
         context.startService(Intent(context, DiPlaySessionService::class.java).setAction(DiPlaySessionService.ACTION_STOP))
     }
     private fun awaitStopped(deadline: Long) {

@@ -10,6 +10,7 @@ pub type Result<T> = std::io::Result<T>;
 pub mod cli;
 /// di play input protocol module.
 pub mod di_play_input;
+pub mod display;
 pub mod hotspot_lifetime;
 /// linux air play server protocol module.
 pub mod linux_air_play_server;

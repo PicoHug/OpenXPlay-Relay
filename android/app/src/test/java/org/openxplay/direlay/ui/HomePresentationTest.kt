@@ -9,6 +9,8 @@ import org.junit.Test
 import org.openxplay.direlay.bluetooth.IphoneSelection
 import org.openxplay.direlay.bluetooth.BondedDevice
 import org.openxplay.direlay.R
+import org.openxplay.direlay.relay.WebStartReason
+import org.openxplay.direlay.relay.WebStartFailure
 import org.openxplay.direlay.settings.*
 import org.openxplay.stream.core.SessionPhase
 
@@ -17,6 +19,32 @@ class HomePresentationTest {
         30, false, true, false, null, wirelessNetwork = WirelessNetworkSettings(choice = WirelessNetworkChoice.WIFI_DIRECT))
     private val resolved = IphoneSelection.OnlyCandidate(BondedDevice("00:11:22:33:A9:30", "Phone", true, true, false))
     private val ready = HomeSnapshot(settings, wireless = true, permissionsReady = true, identityReady = true, iphoneSelection = resolved)
+
+    @Test fun webStartFailuresExplainPortConflictsAndAutomaticRetries() {
+        for (both in listOf(false, true)) {
+            val busy = presentHome(ready.copy(phase = SessionPhase.ACTIVE,
+                settings = settings.copy(carlinkOutput = both, bothOutputs = both),
+                webReason = WebStartReason(WebStartFailure.PORT_BUSY, 9443)))
+            assertEquals(R.string.ui_error, busy.headline)
+            assertEquals(StatusTone.ERROR, busy.tone)
+            assertEquals(R.string.ui_web_port_busy, busy.subline)
+            assertEquals(listOf("9443"), busy.sublineArguments)
+        }
+        val other = presentHome(ready.copy(webReason = WebStartReason(WebStartFailure.OTHER, 8443)))
+        assertEquals(R.string.ui_error, other.headline)
+        assertEquals(R.string.ui_web_start_failed, other.subline)
+        assertTrue(other.sublineArguments.isEmpty())
+        val disabled = presentHome(ready.copy(settings = settings.copy(carlinkOutput = true),
+            webReason = WebStartReason(WebStartFailure.PORT_BUSY, 8443)))
+        assertNotEquals(StatusTone.ERROR, disabled.tone)
+    }
+
+    @Test fun listeningWithoutCarFacingNetworkExplainsWifiOrHotspot() {
+        val missing = ready.copy(phase = SessionPhase.ACTIVE, webListening = true, carNetworkAvailable = false)
+        assertEquals(R.string.ui_head_unit_network, presentHome(missing).subline)
+        assertEquals(R.string.ui_showing_browser, presentHome(missing.copy(carNetworkAvailable = true)).subline)
+        assertEquals(R.string.ui_showing_carlink, presentHome(missing.copy(settings = settings.copy(carlinkOutput = true))).subline)
+    }
 
     @Test fun allSixStatusCardsAndReconnectMapToPlainLanguage() {
         val cases = listOf(

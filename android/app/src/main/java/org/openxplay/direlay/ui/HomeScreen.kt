@@ -187,14 +187,14 @@ data class HomeContent(val presentation: HomePresentation, val addresses: List<S
                     }, stringResource(state.headline), Modifier.size(32.dp))
                 }
             }
-            AnimatedContent(state.headline to state.subline, transitionSpec = {
+            AnimatedContent(Triple(state.headline, state.subline, state.sublineArguments), transitionSpec = {
                 (fadeIn(tween(ms)) + slideInVertically(tween(ms)) { it / 8 }) togetherWith
                     (fadeOut(tween(ms)) + slideOutVertically(tween(ms)) { -it / 8 })
-            }, label = "status") { (headline, subline) ->
+            }, label = "status") { (headline, subline, arguments) ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Heading(stringResource(headline))
                     value.iphoneName?.takeIf { it.isNotBlank() }?.let { Text(stringResource(R.string.ui_iphone_name, it)) }
-                    Hint(if (subline == R.string.ui_iphone_pairing) stringResource(subline, value.deviceName) else stringResource(subline))
+                    Hint(if (subline == R.string.ui_iphone_pairing) stringResource(subline, value.deviceName) else stringResource(subline, *arguments.toTypedArray()))
                 }
             }
         }

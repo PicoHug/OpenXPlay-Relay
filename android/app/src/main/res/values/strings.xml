@@ -537,4 +537,11 @@
     <string name="dev_physical_width">Physical width (calibration)</string>
     <string name="dev_physical_width_off">Off</string>
     <string name="dev_physical_width_hint">Declares this width to the iPhone instead of the selected screen width, to find where iOS changes the CarPlay layout. Applies at the next CarPlay start.</string>
+    <string name="ui_web_port_busy">The web service could not start because port %1$s is in use. Another copy of OpenXPlay Relay (such as a test build) may be running. Stop it; retrying automatically.</string>
+    <string name="ui_web_start_failed">The web service could not start. Retrying automatically.</string>
+    <string name="ui_head_unit_network">This phone is not on a network the head unit can reach. Join the head unit’s hotspot or Wi-Fi, or turn on this phone’s hotspot.</string>
+    <string name="picture_video_codec">Video codec</string>
+    <string name="picture_force_h265">Force H.265</string>
+    <string name="picture_force_h264">Force H.264</string>
+    <string name="picture_video_codec_hint">Automatic uses H.265 when the head unit’s browser can decode it in hardware and falls back to H.264 if it fails. The forced choices are for testing.</string>
 </resources>

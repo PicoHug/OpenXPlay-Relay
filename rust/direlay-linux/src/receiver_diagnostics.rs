@@ -23,6 +23,7 @@ struct Client {
     id: String,
     info: Option<Value>,
     stats: VecDeque<Value>,
+    fullscreen_exits: VecDeque<Value>,
     seen: Instant,
 }
 #[derive(Default)]
@@ -38,7 +39,7 @@ impl ReceiverDiagnostics {
             self.clear();
             return false;
         }
-        if kind != "receiver-info" && kind != "stats" {
+        if !matches!(kind, "receiver-info" | "stats" | "fullscreen-exit") {
             return false;
         }
         let Some(id) = client_id(&event["client"]) else {
@@ -72,6 +73,7 @@ impl ReceiverDiagnostics {
                     id,
                     info: None,
                     stats: VecDeque::with_capacity(MAX_SAMPLES),
+                    fullscreen_exits: VecDeque::with_capacity(MAX_SAMPLES),
                     seen: now,
                 });
                 clients.len() - 1
@@ -81,6 +83,11 @@ impl ReceiverDiagnostics {
         client.seen = now;
         if kind == "receiver-info" {
             client.info = Some(entry);
+        } else if kind == "fullscreen-exit" {
+            if client.fullscreen_exits.len() == MAX_SAMPLES {
+                client.fullscreen_exits.pop_front();
+            }
+            client.fullscreen_exits.push_back(entry);
         } else {
             if client.stats.len() == MAX_SAMPLES {
                 client.stats.pop_front();
@@ -100,7 +107,7 @@ impl ReceiverDiagnostics {
             .iter()
             .map(|c| {
                 let idle = now.saturating_duration_since(c.seen).as_secs_f64();
-                json!({"client": c.id, "idleSeconds": (idle * 10.0).round() / 10.0, "info": c.info, "stats": c.stats})
+                json!({"client": c.id, "idleSeconds": (idle * 10.0).round() / 10.0, "info": c.info, "stats": c.stats, "fullscreenExits": c.fullscreen_exits})
             })
             .collect()
     }
@@ -148,6 +155,22 @@ mod tests {
             MAX_SAMPLES as u32 + 4
         );
         assert!(samples[0].get("type").is_none() && samples[0].get("client").is_none());
+    }
+    #[test]
+    fn fullscreen_exits_are_bounded_and_separate_from_stats() {
+        let d = ReceiverDiagnostics::default();
+        let t = Instant::now();
+        for n in 0..40 {
+            assert!(d.observe(&json!({"type":"fullscreen-exit","client":"1","hiddenMs":n,"autoRestore":"denied","display":{"widthPx":1000,"heightPx":700}}),t));
+        }
+        let row = &d.snapshot(t)[0];
+        assert_eq!(
+            row["fullscreenExits"].as_array().unwrap().len(),
+            MAX_SAMPLES
+        );
+        assert_eq!(row["fullscreenExits"][0]["hiddenMs"], 10);
+        assert_eq!(row["fullscreenExits"][29]["autoRestore"], "denied");
+        assert!(row["stats"].as_array().unwrap().is_empty());
     }
     #[test]
     fn bounds_browsers_and_forgets_silent_ones() {

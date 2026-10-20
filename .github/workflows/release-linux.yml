@@ -1,0 +1,229 @@
+# SPDX-FileCopyrightText: 2026 OpenXPlay.org
+# SPDX-License-Identifier: AGPL-3.0-only
+# Created by riko chen on 2026-10-19
+
+name: Release Linux
+
+# A pushed tag linux-vMAJOR.MINOR.PATCH[-PRERELEASE] publishes the Linux relay as a GitHub
+# Release. A manual run from a branch builds the same files and keeps them as workflow artifacts
+# only. The Android app is released separately by release-android.yml.
+on:
+  push:
+    tags: ['linux-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Path components that must never ship: MFi identities, TLS secrets, offline MFi material.
+  IDENTITY_FILES: '(^|/)(offline-mfi[^/]*|tls\.password|[^/]*\.(pk8|p7b|p12|pfx))(/|$)'
+
+# The Rust build references OpenXPlay-Stream by relative path, so the jobs check the repositories
+# out side by side, Stream at the commit resolved in prepare.
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      stream-sha: ${{ steps.sources.outputs.stream }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: OpenXPlay-Relay
+      # The relay reports its Cargo workspace version, so a release tag must match it.
+      - name: Derive version
+        id: version
+        run: |
+          cargo=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' OpenXPlay-Relay/rust/Cargo.toml)
+          [[ $cargo =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Cannot read the workspace version from rust/Cargo.toml."; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            pattern='^linux-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+            if ! [[ $GITHUB_REF_NAME =~ $pattern ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME must be linux-vMAJOR.MINOR.PATCH or linux-vMAJOR.MINOR.PATCH-PRERELEASE."
+              exit 1
+            fi
+            version=${GITHUB_REF_NAME#linux-v}
+            # Exact match, pre-release included, so every release candidate reports its own version.
+            if [ "$cargo" != "$version" ]; then
+              echo "::error::rust/Cargo.toml has version $cargo; set it to $version before tagging $GITHUB_REF_NAME."
+              exit 1
+            fi
+            prerelease=false
+            [ -z "${BASH_REMATCH[4]}" ] || prerelease=true
+            { echo "version=$version"; echo release=true; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "version=$cargo-dev.${GITHUB_SHA::7}"; echo release=false; echo prerelease=false; } >> "$GITHUB_OUTPUT"
+          fi
+      # Every build of a Relay commit uses the same OpenXPlay-Stream commit, the one in stream.lock.
+      - name: Read the pinned Stream commit
+        id: pin
+        run: |
+          stream=$(tr -d '[:space:]' < OpenXPlay-Relay/stream.lock)
+          [[ $stream =~ ^[0-9a-f]{40}$ ]] || { echo "::error::stream.lock must hold one full OpenXPlay-Stream commit hash."; exit 1; }
+          echo "stream=$stream" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenXPlay/OpenXPlay-Stream
+          ref: ${{ steps.pin.outputs.stream }}
+          path: OpenXPlay-Stream
+      - name: Resolve sibling commits
+        id: sources
+        run: |
+          stream=$(git -C OpenXPlay-Stream rev-parse HEAD)
+          [ "$stream" = "${{ steps.pin.outputs.stream }}" ] || { echo "::error::Checked out OpenXPlay-Stream $stream, not the pinned commit."; exit 1; }
+          echo "stream=$stream" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            OpenXPlay-Relay/admin-web/package-lock.json
+            OpenXPlay-Stream/rust/web-receiver/package-lock.json
+      - name: Build admin page
+        working-directory: OpenXPlay-Relay/admin-web
+        run: npm ci && npm run build
+      # The Linux relay ships the Rust stack's web receiver.
+      - name: Build web receiver
+        working-directory: OpenXPlay-Stream/rust/web-receiver
+        env:
+          OXP_APP_VERSION: ${{ steps.version.outputs.version }}
+        run: npm ci && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-assets
+          path: |
+            OpenXPlay-Relay/admin-web/dist
+            OpenXPlay-Stream/rust/web-receiver/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    name: Linux relay (aarch64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: OpenXPlay-Relay
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenXPlay/OpenXPlay-Stream
+          ref: ${{ needs.prepare.outputs.stream-sha }}
+          path: OpenXPlay-Stream
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target aarch64-unknown-linux-musl --component llvm-tools
+          rustup default 1.99.1
+          command -v clang >/dev/null || { sudo apt-get update && sudo apt-get install -y clang; }
+      - name: Build openxplay-relay
+        working-directory: OpenXPlay-Relay/rust
+        run: cargo fetch --locked && scripts/build-aarch64.sh --locked
+      - name: Build oxp-relay
+        working-directory: OpenXPlay-Stream/rust
+        run: scripts/build-aarch64.sh --locked -p oxp-bin --bin oxp-relay
+      # The layout mirrors the repository, so rust/packaging/install.sh installs it directly and
+      # OpenXPlay-Hardware's make-bundle.sh accepts its rust/packaging directory.
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          name="openxplay-relay-$VERSION-linux-aarch64"
+          pkg="$RUNNER_TEMP/package/$name"
+          target=aarch64-unknown-linux-musl/release
+          mkdir -p "$pkg/bin" "$pkg/rust/packaging" "$pkg/licenses/OpenXPlay-Stream" "$RUNNER_TEMP/dist"
+          install -m 0755 "OpenXPlay-Relay/rust/target/$target/openxplay-relay" "OpenXPlay-Stream/rust/target/$target/oxp-relay" "$pkg/bin/"
+          for binary in "$pkg"/bin/*; do
+            file -b "$binary" | grep -E 'ARM aarch64.*(statically|static-pie) linked' ||
+              { echo "::error::$binary is not a static aarch64 executable."; exit 1; }
+          done
+          cp -R OpenXPlay-Stream/rust/web-receiver/dist "$pkg/web"
+          cp -R OpenXPlay-Relay/admin-web/dist "$pkg/admin"
+          install -m 0644 OpenXPlay-Relay/LICENSE OpenXPlay-Relay/LICENSE-GPL-3.0 OpenXPlay-Relay/NOTICE "$pkg/"
+          install -m 0644 OpenXPlay-Stream/NOTICE OpenXPlay-Stream/THIRD-PARTY-LICENSES.md "$pkg/licenses/OpenXPlay-Stream/"
+          install -m 0755 OpenXPlay-Relay/rust/packaging/install.sh "$pkg/rust/packaging/"
+          install -m 0644 OpenXPlay-Relay/rust/packaging/openxplay-relay.service "$pkg/rust/packaging/"
+          # Install into a staging root to prove the package meets the installer's input checks.
+          root="$RUNNER_TEMP/install-root"
+          stub="$RUNNER_TEMP/stub"
+          mkdir -p "$root/etc/systemd/system" "$stub"
+          printf '#!/bin/sh\nexit 0\n' > "$stub/systemctl" && chmod +x "$stub/systemctl"
+          (cd "$pkg" && PATH="$stub:$PATH" DESTDIR="$root" sh rust/packaging/install.sh bin/openxplay-relay bin/oxp-relay web admin)
+          test -x "$root/opt/openxplay/bin/oxp-relay" && test -f "$root/opt/openxplay/share/web/receiver/index.html"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -C "$RUNNER_TEMP/package" -czf "$RUNNER_TEMP/dist/$name.tar.gz" "$name"
+          if found=$(tar -tzf "$RUNNER_TEMP/dist/$name.tar.gz" | grep -E -i "$IDENTITY_FILES"); then
+            echo "::error::The package contains identity files:"
+            echo "$found"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-aarch64
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [prepare, linux]
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-aarch64
+          path: dist
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          STREAM_SHA: ${{ needs.prepare.outputs.stream-sha }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+          # An annotated tag's message is the changelog and opens the notes; a lightweight tag has none.
+          changelog=""
+          read -r type sha < <(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "$type" = tag ]; then
+            # A signed tag's message ends with its signature block, which is not part of the changelog.
+            changelog="$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .message | sed '/^-----BEGIN [A-Z]* SIGNATURE-----$/,$d')"
+          fi
+          # The rest of the notes record the exact sources of every file in the release.
+          server="$GITHUB_SERVER_URL/OpenXPlay"
+          notes="${changelog:+$changelog
+
+          ---
+
+          }Built from [OpenXPlay-Relay@${GITHUB_SHA::12}]($server/OpenXPlay-Relay/commit/$GITHUB_SHA) and [OpenXPlay-Stream@${STREAM_SHA::12}]($server/OpenXPlay-Stream/commit/$STREAM_SHA).
+
+          - \`openxplay-relay-$VERSION-linux-aarch64.tar.gz\`: the Linux relay for aarch64 (static musl binaries, web pages and \`rust/packaging/install.sh\`).
+          - \`SHA256SUMS\`: SHA-256 checksums of these files.
+
+          Setup: https://openxplay.org/en/quick-start · 设置：https://openxplay.org/quick-start. No build contains an Apple accessory (MFi) identity; supply your own."
+          # A Linux release never becomes Latest: the latest-download link must keep finding the APK.
+          flags=(--latest=false)
+          [ "$PRERELEASE" != true ] || flags+=(--prerelease)
+          gh release create "$TAG" dist/* --verify-tag --title "OpenXPlay Relay for Linux $VERSION" --notes "$notes" "${flags[@]}"

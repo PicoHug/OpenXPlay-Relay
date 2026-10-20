@@ -21,6 +21,17 @@ class SettingsDraftSaverTest {
         30, false, true, false, null)
     private val scope = object : SaverScope { override fun canBeSaved(value: Any) = true }
     private fun bundle(value: RelaySettings): Bundle = with(relaySettingsSaver(base)) { requireNotNull(scope.save(value)) }
+    @Test fun everyVideoCodecDraftSurvivesRotationAndOldDraftsKeepTheBase() {
+        for (codec in VideoCodecSetting.entries) {
+            val value = base.copy(videoCodec = codec)
+            val saved = bundle(value)
+            assertEquals(codec.name, saved.getString("videoCodec"))
+            assertEquals(value, relaySettingsSaver(base).restore(saved))
+        }
+        val old = bundle(base); old.remove("videoCodec")
+        val remembered = base.copy(videoCodec = VideoCodecSetting.H265)
+        assertEquals(remembered, relaySettingsSaver(remembered).restore(old))
+    }
     @Test fun everyScreenWidthDraftUsesTheNewNumericKey() {
         for (width in CarPlayScreenWidth.entries) {
             val value = base.copy(carplayScreenWidth = width)

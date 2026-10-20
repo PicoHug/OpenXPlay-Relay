@@ -42,7 +42,14 @@ fun developerView(runtime: RelayRuntime): DeveloperView {
     runtime.displayPolicy.primaryDisplay?.viewport?.let {
         add(DeveloperRow(R.string.picture_window, "${it.width} × ${it.height} · ${"%.2f".format(java.util.Locale.ROOT, it.width.toDouble() / it.height)}:1"))
     }
-    add(DeveloperRow(R.string.dev_receiver, "", valueKey = developerStateKey(runtime.serverState)))
+    add(DeveloperRow(R.string.picture_video_codec, "${runtime.status.videoCodec ?: runtime.appliedVideoDecision.codec} · ${runtime.videoDecision.reason}"))
+    val webReason = runtime.serverReason
+    add(DeveloperRow(R.string.dev_receiver, "", valueKey = when (webReason?.failure) {
+        org.openxplay.direlay.relay.WebStartFailure.PORT_BUSY -> R.string.ui_web_port_busy
+        org.openxplay.direlay.relay.WebStartFailure.OTHER -> R.string.ui_web_start_failed
+        null -> developerStateKey(runtime.serverState)
+    }, valueArguments = if (webReason?.failure == org.openxplay.direlay.relay.WebStartFailure.PORT_BUSY)
+        listOf(webReason.port.toString()) else emptyList()))
     add(DeveloperRow(R.string.ui_carlink, "", valueKey = developerStateKey(runtime.carlinkState)))
     add(DeveloperRow(R.string.dev_iphone_selection, runtime.iphoneSelection().diagnostic()))
     add(DeveloperRow(R.string.dev_session, "", valueKey = developerStateKey(runtime.status.session?.phase?.name ?: "idle")))

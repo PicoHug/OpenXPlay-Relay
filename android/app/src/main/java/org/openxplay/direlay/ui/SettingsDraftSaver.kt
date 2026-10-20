@@ -27,6 +27,7 @@ fun relaySettingsSaver(base: RelaySettings) = Saver<RelaySettings, Bundle>(save 
         putStringArrayList("car", arrayListOf(value.car.brand, value.car.brandText, value.car.model, value.car.modelText))
         putString("iphoneAddress", value.iphoneAddress)
         putString("displayMode", value.displayMode.name)
+        putString("videoCodec", value.videoCodec.name)
         putString("carplayResolution", value.carplayResolution.name)
         putInt("carplayScreenWidth", value.carplayScreenWidth.mm)
         value.display?.let { putIntArray("display", intArrayOf(it.width, it.height, it.density)) }
@@ -40,6 +41,7 @@ fun relaySettingsSaver(base: RelaySettings) = Saver<RelaySettings, Bundle>(save 
         microphoneSource = MicrophoneSource.valueOf(text[7]),
         autoStartOnBoot = flags[0], autoStartWhenReady = flags[1], localPreview = flags[2], carlinkOutput = flags[3],
         playCarPlayAudio = flags[4], bothOutputs = flags[5], vehicleInformation = flags.getOrElse(6) { false }, carlinkAutoReconnect = bundle.getBoolean("carlinkAutoReconnect", flags.getOrElse(8) { true }), fps = numbers[0], webPort = numbers[1].takeIf { it != 0 },
+        videoCodec = VideoCodecSetting.entries.firstOrNull { it.name == bundle.getString("videoCodec") } ?: base.videoCodec,
         carplayResolution = CarPlayResolution.entries.firstOrNull { it.name == bundle.getString("carplayResolution") } ?: base.carplayResolution,
         carplayScreenWidth = CarPlayScreenWidth.entries.firstOrNull { it.mm == bundle.getInt("carplayScreenWidth", base.carplayScreenWidth.mm) } ?: base.carplayScreenWidth,
         carlinkTrace = bundle.getBoolean("carlinkTrace", false),

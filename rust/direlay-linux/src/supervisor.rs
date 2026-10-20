@@ -66,6 +66,12 @@ impl SupervisorSettings {
                 "openxplay-linux.local".into(),
             ]
         };
+        args.extend([
+            "--relay-name".into(),
+            crate::branding::DEVICE_NAME.into(),
+            "--relay-version".into(),
+            env!("CARGO_PKG_VERSION").into(),
+        ]);
         let mut ips = self.addresses.clone();
         ips.sort();
         ips.dedup();

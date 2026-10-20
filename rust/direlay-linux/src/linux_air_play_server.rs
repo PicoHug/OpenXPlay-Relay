@@ -444,6 +444,13 @@ impl LinuxAirPlayServer {
 }
 struct DeferredControl(Mutex<std::sync::Weak<AirPlaySession>>);
 impl SessionControl for DeferredControl {
+    fn show_view_area(&self, index: usize) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .upgrade()
+            .is_some_and(|s| s.show_view_area(index))
+    }
     fn send_touch(&self, c: &[AirPlayContact]) -> Result<bool> {
         match self.0.lock().unwrap().upgrade() {
             Some(s) => s.send_touch(c),

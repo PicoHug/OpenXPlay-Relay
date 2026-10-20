@@ -6,6 +6,8 @@ package org.openxplay.direlay.ui
 import org.openxplay.direlay.bluetooth.IphoneSelection
 import org.openxplay.direlay.R
 import org.openxplay.direlay.settings.RelaySettings
+import org.openxplay.direlay.relay.WebStartReason
+import org.openxplay.direlay.relay.WebStartFailure
 import org.openxplay.stream.core.SessionPhase
 
 /** No Android services or mutable runtime references enter the presentation mapper. */
@@ -14,16 +16,19 @@ enum class SetupAction { PERMISSIONS, IDENTITY, IPHONE, SETTINGS, SHARED_WIFI, C
 data class SetupItem(val text: Int, val actionLabel: Int, val action: SetupAction)
 data class HomePresentation(val headline: Int, val subline: Int, val tone: StatusTone,
     val mode: List<ModeRow>, val checklist: List<SetupItem>, val canStart: Boolean, val running: Boolean,
-    val checking: Boolean = false)
+    val checking: Boolean = false, val sublineArguments: List<String> = emptyList())
 data class HomeSnapshot(
     val settings: RelaySettings, val wireless: Boolean, val permissionsReady: Boolean,
     val identityReady: Boolean, val checking: Boolean = false, val validSettings: Boolean = true,
     val phase: SessionPhase? = null, val started: Boolean = false, val failure: Boolean = false,
     val iphoneSelection: IphoneSelection = IphoneSelection.NoIphone, val autoStartPaused: Boolean = false,
     val sharedWifiReady: Boolean = true, val currentWifi: String? = null,
+    val webReason: WebStartReason? = null, val webListening: Boolean = false, val carNetworkAvailable: Boolean = true,
 )
 
 fun presentHome(value: HomeSnapshot): HomePresentation {
+    val browser = !value.settings.carlinkOutput || value.settings.bothOutputs
+    val webReason = value.webReason.takeIf { browser }
     val iphoneReady = !value.wireless || value.iphoneSelection.address != null
     val checklist = buildList {
         if (!value.permissionsReady) add(SetupItem(R.string.ui_permissions, R.string.ui_allow, SetupAction.PERMISSIONS))
@@ -47,7 +52,7 @@ fun presentHome(value: HomeSnapshot): HomePresentation {
     val active = value.phase == SessionPhase.ACTIVE
     val running = active || value.phase in setOf(SessionPhase.CONNECTING, SessionPhase.RECONNECTING) || value.started
     val (headline, tone) = when {
-        value.failure -> R.string.ui_error to StatusTone.ERROR
+        value.failure || webReason != null -> R.string.ui_error to StatusTone.ERROR
         !ready -> R.string.ui_setup_needed to StatusTone.ATTENTION
         active -> R.string.ui_running to StatusTone.RUNNING
         value.phase in setOf(SessionPhase.CONNECTING, SessionPhase.RECONNECTING) -> R.string.ui_connecting to StatusTone.PROGRESS
@@ -56,9 +61,12 @@ fun presentHome(value: HomeSnapshot): HomePresentation {
         else -> R.string.ui_ready to StatusTone.IDLE
     }
     val subline = when {
+        webReason?.failure == WebStartFailure.PORT_BUSY -> R.string.ui_web_port_busy
+        webReason != null -> R.string.ui_web_start_failed
         value.failure -> R.string.ui_retry_hint
         value.checking -> R.string.direlay_checking_identity
         !ready -> R.string.ui_setup_hint
+        browser && value.webListening && !value.carNetworkAvailable -> R.string.ui_head_unit_network
         active && value.settings.bothOutputs -> R.string.ui_showing_both
         active && value.settings.carlinkOutput -> R.string.ui_showing_carlink
         active -> R.string.ui_showing_browser
@@ -68,5 +76,6 @@ fun presentHome(value: HomeSnapshot): HomePresentation {
         else -> R.string.ui_start_hint
     }
     return HomePresentation(headline, subline, tone, modeRows(value.settings, value.wireless),
-        checklist, ready && iphoneReady, running, value.checking)
+        checklist, ready && iphoneReady, running, value.checking,
+        if (webReason?.failure == WebStartFailure.PORT_BUSY) listOf(webReason.port.toString()) else emptyList())
 }

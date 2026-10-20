@@ -14,6 +14,87 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class DiPlayInputTest {
+    @Test fun recoverySendsThePendingRequestWhenTheWindowOpensAndCancelsItOnAKeyframe() {
+        for (codec in VideoCodec.entries) {
+            val now = java.util.concurrent.atomic.AtomicLong(0)
+            val sent = java.util.concurrent.LinkedBlockingQueue<Pair<Int, Long>>()
+            DiPlayInput(nowMs = now::get).use { input ->
+                input.start(configuration, CapturingInputSink())
+                val bridge = StreamBridgeSink(input, object : MediaSink {}, SessionControl { false })
+                bridge.setVideoRecoveryHandler(110) { sent.offer(0 to now.get()) }
+                bridge.setVideoRecoveryHandler(111) { sent.offer(1 to now.get()) }
+                bridge.onVideoCodec(110, if (codec == VideoCodec.H265) com.shilapi.xcertplay.airplay.VideoCodec.H265 else com.shilapi.xcertplay.airplay.VideoCodec.H264)
+                bridge.onVideoConfig(110, if (codec == VideoCodec.H265) hevcConfig else avcConfig)
+                input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin))
+                assertEquals(0 to 0L, sent.poll(2, TimeUnit.SECONDS))
+                now.set(250); input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin))
+                now.set(1_000)
+                assertEquals(0 to 1_000L, sent.poll(2, TimeUnit.SECONDS))
+                now.set(1_250); input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin))
+                bridge.onVideoFrame(110, if (codec == VideoCodec.H265) hex("00 00 00 01 26 01 80") else hex("00 00 00 01 65 80"))
+                now.set(2_000); input.control(ControlEvent.KeyFrameRequest(ScreenId.CLUSTER, origin))
+                assertEquals(1 to 2_000L, sent.poll(2, TimeUnit.SECONDS))
+                now.set(3_000); input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin))
+                assertEquals(0 to 3_000L, sent.poll(2, TimeUnit.SECONDS))
+            }
+        }
+    }
+
+    @Test fun watchdogUsesPublishedMainKeyframesAndOnlyAutomaticHevc() {
+        var now = 0L
+        var automatic = true
+        DiPlayInput(automaticHevc = { automatic }, nowMs = { now }).use { input ->
+            input.start(configuration, CapturingInputSink())
+            val bridge = StreamBridgeSink(input, object : MediaSink {}, SessionControl { false })
+            bridge.setVideoRecoveryHandler(110) {}
+            bridge.onVideoCodec(110, com.shilapi.xcertplay.airplay.VideoCodec.H265)
+            bridge.onVideoConfig(110, hevcConfig)
+            assertTrue(input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin)))
+            now = 7_999; assertNull(input.hevcFailure())
+            bridge.onVideoFrame(110, hex("00 00 00 01 26 01 80"))
+            now = 16_000; assertNull(input.hevcFailure())
+            assertTrue(input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin)))
+            bridge.onVideoCodec(111, com.shilapi.xcertplay.airplay.VideoCodec.H265)
+            bridge.onVideoConfig(111, hevcConfig)
+            bridge.onVideoFrame(111, hex("00 00 00 01 26 01 80"))
+            now = 24_000; automatic = false; assertNull(input.hevcFailure())
+            automatic = true; assertEquals("keyframe-timeout waitMs=8000", input.hevcFailure())
+            input.stop(); assertNotNull(input.hevcFailure())
+        }
+    }
+
+    @Test fun relayRequestedStopDoesNotTripTheWatchdogWhileTheServiceStops() {
+        var now = 0L
+        DiPlayInput(automaticHevc = { true }, nowMs = { now }).use { input ->
+            input.start(configuration, CapturingInputSink())
+            val bridge = StreamBridgeSink(input, object : MediaSink {}, SessionControl { false })
+            bridge.setVideoRecoveryHandler(110) {}
+            input.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin))
+            input.expectStop(); now = 10_000
+            assertNull(input.hevcFailure())
+        }
+    }
+
+    @Test fun bridgeTracksFirstHevcFormatAndExcludesRelayRequestedStopsFromEarlyDrops() {
+        var now = 0L
+        DiPlayInput(automaticHevc = { true }, nowMs = { now }).use { input ->
+            input.start(configuration, CapturingInputSink())
+            fun session(): StreamBridgeSink {
+                val bridge = StreamBridgeSink(input, object : MediaSink {}, SessionControl { false })
+                bridge.onVideoCodec(110, com.shilapi.xcertplay.airplay.VideoCodec.H265)
+                bridge.onVideoConfig(110, hevcConfig)
+                return bridge
+            }
+            val requested = session(); now = 100
+            input.expectStop(); requested.onScreenStreamActive(110, false)
+            assertNull(input.hevcFailure())
+            val first = session(); now = 200; first.onScreenStreamActive(110, false)
+            assertNull(input.hevcFailure())
+            val second = session(); now = 300; second.onScreenStreamActive(110, false)
+            assertEquals("early-drop waitMs=100 count=2", input.hevcFailure())
+        }
+    }
+
     @Test fun viewAreaCommandsUseOnlyTheCurrentDecoratedSession() {
         DiPlayInput().use { input ->
             val calls = mutableListOf<Int>()

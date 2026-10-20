@@ -38,8 +38,9 @@ private fun RelayRuntime.overlaySnapshot(): HostOverlaySnapshot? {
     return HostOverlaySnapshot(HomeSnapshot(settings, settingsStore.wireless(settings),
         permissionsReady = true, identityReady = true, phase = status.session?.phase, started = true,
         failure = status.failure != null || (settings.carlinkOutput && carlinkFailed) ||
-            (!settings.carlinkOutput && serverState.startsWith("Web receiver unavailable")),
-        iphoneSelection = selection), name, urls, stopped = autoStartGate.paused)
+            ((!settings.carlinkOutput || settings.bothOutputs) && serverReason != null),
+        iphoneSelection = selection, webReason = serverReason, webListening = serverState.startsWith("TLS enabled"),
+        carNetworkAvailable = carIpv4.isNotEmpty()), name, urls, stopped = autoStartGate.paused)
 }
 
 @Composable private fun RuntimeHostOverlay(activity: ComponentActivity, runtime: RelayRuntime) {
@@ -104,13 +105,12 @@ private fun RelayRuntime.overlaySnapshot(): HostOverlaySnapshot? {
                 value.outputs.forEach { output ->
                     Text(stringResource(output), style = MaterialTheme.typography.titleMedium)
                     if (output == R.string.ui_browser) {
-                        if (value.receiverUrls.isEmpty()) Hint(stringResource(R.string.ui_no_network))
-                        else value.receiverUrls.forEach { Text(it) }
-                        if (value.receiverUrls.isNotEmpty()) Hint(stringResource(R.string.ui_browser_https_hint))
+                        value.receiverUrls.forEach { Text(it) }
+                        value.browserHint?.let { Hint(stringResource(it)) }
                     }
                 }
             }
-            value.hint?.let { Hint(stringResource(it)) }
+            value.hint?.let { Hint(stringResource(it, *value.hintArguments.toTypedArray())) }
             value.buttons.forEach { button ->
                 OutlinedButton(onClick = { onAction(button.action) }, enabled = !stopping,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {

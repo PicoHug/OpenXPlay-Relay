@@ -34,6 +34,8 @@ data class DisplayProfile(val width: Int, val height: Int, val density: Int) {
     }
 }
 
+enum class VideoCodecSetting(val wire: String) { AUTO("auto"), H265("h265"), H264("h264") }
+
 enum class MicrophoneSource { HEAD_UNIT, THIS_DEVICE }
 
 data class RelaySettings(
@@ -66,6 +68,7 @@ data class RelaySettings(
     val carplayScreenWidth: CarPlayScreenWidth = CarPlayScreenWidth.MM200,
     val viewAreas: Boolean = true,
     val car: CarSelection = CarSelection(),
+    val videoCodec: VideoCodecSetting = VideoCodecSetting.AUTO,
 ) {
     fun validate(wireless: Boolean = connectionMode == ConnectionMode.WIRELESS, allowEmptySharedWifi: Boolean = false) {
         if (wireless) wirelessNetwork.validate(allowEmptySharedWifi, allowIncompleteHotspot = allowEmptySharedWifi && CarlinkConnectionPolicy.enabled(this))
@@ -91,7 +94,7 @@ data class RelaySettings(
     }
 }
 
-fun RelaySettings.displaySettings() = org.openxplay.stream.web.DisplaySettings(carplayResolution.wire, carplayScreenWidth.mm)
+fun RelaySettings.displaySettings() = org.openxplay.stream.web.DisplaySettings(carplayResolution.wire, carplayScreenWidth.mm, videoCodec.wire)
 
 /** Maps relay controls to DiPlay's persistence; only relay-specific values live in direlay. */
 class RelaySettingsStore(private val context: Context) : AutoCloseable, org.openxplay.stream.web.DisplaySettingsPort {
@@ -99,6 +102,7 @@ class RelaySettingsStore(private val context: Context) : AutoCloseable, org.open
     override fun current() = cached.value?.displaySettings() ?: org.openxplay.stream.web.DisplaySettings()
     @Synchronized override fun set(settings: org.openxplay.stream.web.DisplaySettings, origin: org.openxplay.stream.core.Origin) {
         save((cached.value ?: load()).copy(
+            videoCodec = VideoCodecSetting.entries.first { it.wire == settings.videoCodec },
             carplayResolution = CarPlayResolution.entries.first { it.wire == settings.resolution },
             carplayScreenWidth = CarPlayScreenWidth.entries.first { it.mm == settings.screenWidth }))
     }
@@ -200,6 +204,7 @@ class RelaySettingsStore(private val context: Context) : AutoCloseable, org.open
             viewAreas = relay.getBoolean("carPlayViewAreas", true),
             car = CarSelection(relay.getString("carBrand", "").orEmpty(), relay.getString("carBrandText", "").orEmpty(),
                 relay.getString("carModel", "").orEmpty(), relay.getString("carModelText", "").orEmpty()).normalized(),
+            videoCodec = VideoCodecSetting.entries.firstOrNull { it.name == relay.getString("videoCodec", null) } ?: VideoCodecSetting.AUTO,
             carplayResolution = CarPlayResolution.entries.firstOrNull { it.name == relay.getString("carplayResolution", null) } ?: CarPlayResolution.AUTO,
             carplayScreenWidth = CarPlayScreenWidth.entries.firstOrNull { it.mm == relay.getInt("carplayScreenWidth", 200) } ?: CarPlayScreenWidth.MM200,
             plugins = relay.getBoolean("plugins", false),
@@ -247,6 +252,7 @@ class RelaySettingsStore(private val context: Context) : AutoCloseable, org.open
             .putBoolean("carPlayViewAreas", settings.viewAreas)
             .putString("carBrand", settings.car.brand).putString("carBrandText", settings.car.brandText)
             .putString("carModel", settings.car.model).putString("carModelText", settings.car.modelText)
+            .putString("videoCodec", settings.videoCodec.name)
             .putString("carplayResolution", settings.carplayResolution.name)
             .putInt("carplayScreenWidth", settings.carplayScreenWidth.mm)
             .putBoolean("plugins", settings.plugins)

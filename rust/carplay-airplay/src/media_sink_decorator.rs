@@ -15,6 +15,9 @@ use std::{
 
 /// Platform interface for `SessionControl`. Implementations must support bounded shutdown.
 pub trait SessionControl: Send + Sync {
+    fn show_view_area(&self, _index: usize) -> bool {
+        false
+    }
     /// Errors propagate to the lifecycle owner.
     fn send_touch(&self, contacts: &[AirPlayContact]) -> Result<bool>;
 }

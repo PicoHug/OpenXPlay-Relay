@@ -531,4 +531,11 @@
     <string name="dev_physical_width">物理宽度（调试）</string>
     <string name="dev_physical_width_off">关闭</string>
     <string name="dev_physical_width_hint">向 iPhone 声明这个宽度，覆盖所选的屏幕宽度，用来找出 iOS 切换 CarPlay 布局的尺寸。下次启动 CarPlay 时生效。</string>
+    <string name="ui_web_port_busy">网页服务无法启动：端口 %1$s 已被占用。可能有另一个 OpenXPlay Relay（如测试版）正在运行，请将其停止。正在自动重试。</string>
+    <string name="ui_web_start_failed">网页服务无法启动，正在自动重试。</string>
+    <string name="ui_head_unit_network">本机尚未接入车机可访问的网络。请连接车机热点或 Wi-Fi，或开启本机热点。</string>
+    <string name="picture_video_codec">视频编码</string>
+    <string name="picture_force_h265">强制 H.265</string>
+    <string name="picture_force_h264">强制 H.264</string>
+    <string name="picture_video_codec_hint">自动：车机浏览器能硬件解码 H.265 时使用 H.265，出问题时自动改用 H.264。强制选项用于测试。</string>
 </resources>

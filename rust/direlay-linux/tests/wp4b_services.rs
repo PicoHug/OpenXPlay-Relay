@@ -824,6 +824,12 @@ fn supervisor_arguments_and_urls() {
         .windows(2)
         .any(|a| a == ["--tls-san", "192.168.1.78"]));
     assert!(strings.contains(&"--pairing"));
+    assert!(strings
+        .windows(2)
+        .any(|a| a == ["--relay-name", "OpenXPlay Linux"]));
+    assert!(strings
+        .windows(2)
+        .any(|a| a == ["--relay-version", env!("CARGO_PKG_VERSION")]));
     assert_eq!(
         settings.receiver_urls("openxplay-linux.local"),
         [
@@ -1790,6 +1796,10 @@ fn plugin_arguments_off_golden_and_on_filtered_in_order() {
         "/var/lib/openxplay/receiver-tls",
         "--tls-san",
         "openxplay-linux.local",
+        "--relay-name",
+        "OpenXPlay Linux",
+        "--relay-version",
+        env!("CARGO_PKG_VERSION"),
     ]
     .iter()
     .map(Into::into)

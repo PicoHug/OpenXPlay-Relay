@@ -133,7 +133,7 @@ function receiverCard(report: ReceiverReport, index: number, t: Translate): stri
     + `<div class="report-row"><button type="button" data-report="${esc(report.client)}">${icon('copy')}<span>${t('diag.copy')}</span></button><span class="report-feedback" role="status"></span></div></article>`;
 }
 
-export const VIDEO_REASONS = ['relay-h264-only', 'main-screen-output-prefers-h264', 'all-main-screen-outputs-hardware-hevc', 'hardware-hevc-unavailable', 'no-main-screen-output', 'output-requires-avc', 'remembered-codec', 'hevc-keyframe-timeout'];
+export const VIDEO_REASONS = ['setting-h264', 'setting-h265', 'hevc-failed', 'relay-h264-only', 'main-screen-output-prefers-h264', 'all-main-screen-outputs-hardware-hevc', 'hardware-hevc-unavailable', 'no-main-screen-output', 'output-requires-avc', 'remembered-codec', 'hevc-keyframe-timeout'];
 export function videoView(status: Pick<Status, 'video' | 'receivers'>) {
   const video = status.video;
   if (!video?.codec) return null;

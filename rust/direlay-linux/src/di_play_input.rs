@@ -81,6 +81,8 @@ pub(crate) struct InputState {
     codec_state_path: Option<std::path::PathBuf>,
     codec_writes: u64,
     receiver_decided: bool,
+    auto_video: VideoCodecDecision,
+    codec_setting: String,
     /// A controller has applied `applied_video`.
     video_configured: bool,
 }
@@ -127,6 +129,7 @@ enum InputCommand {
     Touch(u64, Vec<AirPlayContact>),
 }
 pub struct DiPlayInput {
+    pub(crate) display: Arc<Mutex<crate::display::DisplayRuntime>>,
     pub(crate) context: Mutex<Option<crate::context::Producer>>,
     pub(crate) state: Arc<Mutex<InputState>>,
     recovery: SyncSender<InputCommand>,
@@ -154,7 +157,18 @@ impl DiPlayInput {
             recovery: BTreeMap::new(),
             keys: None,
             microphones: BTreeMap::new(),
-            declarations: BTreeMap::new(),
+            declarations: BTreeMap::from([
+                (
+                    "display-settings".into(),
+                    Message::Json(oxp_wire::display_settings(
+                        &crate::display::DisplayState::default().settings(),
+                    )),
+                ),
+                (
+                    "display-view-area".into(),
+                    Message::Json(serde_json::json!({"type":"view-area","screen":0,"area":null})),
+                ),
+            ]),
             output: None,
             active: false,
             desired_fps: 60,
@@ -170,15 +184,20 @@ impl DiPlayInput {
             codec_state_path: None,
             codec_writes: 0,
             receiver_decided: false,
+            auto_video: Default::default(),
+            codec_setting: "auto".into(),
             video_configured: false,
         }));
+        let display = Arc::new(Mutex::new(crate::display::DisplayRuntime::default()));
+        let worker_display = display.clone();
         let (tx, rx) = sync_channel::<InputCommand>(16);
         let (s, e, c) = (state.clone(), events.clone(), clock.clone());
         let _ = crate::platform::spawn_worker(
             "direlay-recovery",
-            Box::new(move || Self::run_recovery(&s, &e, &c, rx)),
+            Box::new(move || Self::run_recovery(&s, &worker_display, &e, &c, rx)),
         );
         Self {
+            display,
             state,
             recovery: tx,
             events,
@@ -190,6 +209,7 @@ impl DiPlayInput {
     /// Delivers recovery requests and touches, and repeats an outstanding key-frame request.
     fn run_recovery(
         state: &Mutex<InputState>,
+        display: &Mutex<crate::display::DisplayRuntime>,
         events: &JsonEvents,
         clock: &Clock,
         rx: Receiver<InputCommand>,
@@ -243,6 +263,7 @@ impl DiPlayInput {
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            Self::poll_view_area_state(display, state, clock());
         }
     }
     /// The handler to call again when a screen-0 key frame is still outstanding after
@@ -268,6 +289,8 @@ impl DiPlayInput {
     }
     /// Load once per process, before the first controller snapshots its codec.
     pub fn initialize_video_state(&self, state_dir: &std::path::Path) {
+        self.initialize_display(state_dir);
+        let setting = self.display_settings().video_codec;
         let mut s = self.state.lock().unwrap();
         if s.codec_state_path.is_some() {
             return;
@@ -289,9 +312,15 @@ impl DiPlayInput {
                 };
             }
         }
+        s.auto_video = s.desired_video;
+        s.codec_setting = setting;
+        s.desired_video = Self::setting_decision(&s.codec_setting, s.auto_video);
         s.codec_state_path = Some(path);
     }
     fn stage_codec_write(s: &mut InputState, codec: VideoCodec) -> Option<CodecWrite> {
+        if s.codec_setting != "auto" {
+            return None;
+        }
         let path = s.codec_state_path.clone()?;
         s.codec_writes += 1;
         Some(CodecWrite {
@@ -335,7 +364,7 @@ impl DiPlayInput {
     /// Falls back to H.264 when an H.265 key frame is still missing after the timeout.
     fn poll_keyframe_watchdog(&self, s: &mut InputState) -> Option<CodecWrite> {
         let watch = s.keyframe_watch.as_ref()?;
-        if s.applied_video.codec != VideoCodec::H265 || s.hevc_failed {
+        if s.codec_setting != "auto" || s.applied_video.codec != VideoCodec::H265 || s.hevc_failed {
             return None;
         }
         let now = (self.clock)();
@@ -385,7 +414,7 @@ impl DiPlayInput {
         s.keys = None;
         s.active = false;
         s.recovery.clear();
-        s.declarations.clear();
+        s.declarations.retain(|key, _| key.starts_with("display-"));
         Self::publish_locked(
             &mut s,
             "0-session",
@@ -406,7 +435,7 @@ impl DiPlayInput {
             s.latest = Some(next);
             s.current = Some(next);
             s.active = false;
-            s.declarations.clear();
+            s.declarations.retain(|key, _| key.starts_with("display-"));
             Self::publish_locked(
                 &mut s,
                 "0-session",
@@ -430,7 +459,7 @@ impl DiPlayInput {
             let keys: Vec<_> = s
                 .declarations
                 .keys()
-                .filter(|k| k.as_str() != "0-session")
+                .filter(|k| k.as_str() != "0-session" && !k.starts_with("display-"))
                 .cloned()
                 .collect();
             for key in keys {
@@ -508,6 +537,7 @@ impl DiPlayInput {
     }
     /// Consume pending changes once, before the controller worker can race tick.
     pub fn configure_session(&self) -> (u32, bool) {
+        self.freeze_display();
         let (fps, video, write) = {
             let mut s = self.state.lock().unwrap();
             s.restart_requested = false;
@@ -565,6 +595,7 @@ impl DiPlayInput {
             "width":field("width"),"height":field("height")})
     }
     pub fn clear_receiver_capabilities(&self) {
+        self.display.lock().unwrap().connected = false;
         self.context_disconnected();
         self.set_video_decision(oxp_core::video_codec_policy::resolve(&[], false));
     }
@@ -573,7 +604,17 @@ impl DiPlayInput {
         if decision.reason != "no-main-screen-output" {
             s.receiver_decided = true;
         }
-        if s.hevc_failed {
+        s.auto_video = if decision.reason == "no-main-screen-output" {
+            VideoCodecDecision {
+                codec: s.auto_video.codec,
+                ..decision
+            }
+        } else {
+            decision
+        };
+        if s.codec_setting != "auto" {
+            decision = Self::setting_decision(&s.codec_setting, decision);
+        } else if s.hevc_failed {
             return;
         }
         // With no main-screen output nobody needs a different codec: keep the one in use (or,
@@ -599,13 +640,20 @@ impl DiPlayInput {
     }
     /// The relay shell owns the controller; the producer never restarts Stream.
     pub fn apply_requested_restart(&self, stop_controller: impl FnOnce()) -> bool {
+        self.poll_view_area();
+        let (display_change, waiting_settings) = {
+            let mut d = self.display.lock().unwrap();
+            let due = d.due((self.clock)());
+            (due, d.waiting_settings())
+        };
         let (requested, write) = {
             let mut s = self.state.lock().unwrap();
             let write = self.poll_keyframe_watchdog(&mut s);
             let now = (self.clock)();
-            let codec_change = !s.codec_restart_pending
+            let codec_change = !waiting_settings
+                && !s.codec_restart_pending
                 && s.desired_video.codec != s.applied_video.codec
-                && if s.hevc_failed {
+                && if display_change || s.hevc_failed {
                     // A stuck H.265 session without key frames is worse than another restart.
                     s.codec_restarts.record(now);
                     true
@@ -618,14 +666,15 @@ impl DiPlayInput {
             if s.desired_fps == s.applied_fps {
                 s.restart_requested = false;
             }
-            let rate_change = s.restart_requested
+            let rate_change = !waiting_settings
+                && s.restart_requested
                 && s.last_restart
                     .is_none_or(|at| now.saturating_duration_since(at) >= RATE_RESTART_INTERVAL);
             if rate_change {
                 s.restart_requested = false;
                 s.last_restart = Some(now);
             }
-            (rate_change || codec_change, write)
+            (display_change || rate_change || codec_change, write)
         };
         self.persist_codec(write);
         if requested {
@@ -639,8 +688,15 @@ impl DiPlayInput {
                 self.context_peer(v);
                 Ok(true)
             }
+            Message::Json(v) if v["type"] == "display-settings" => {
+                let settings =
+                    oxp_wire::decode_display_settings(v).map_err(std::io::Error::other)?;
+                self.update_display_settings(settings)?;
+                Ok(true)
+            }
             Message::Json(v) if v["type"] == "capabilities" => {
                 oxp_wire::validate_json(v).map_err(std::io::Error::other)?;
+                self.observe_display(v)?;
                 let display = &v["displays"]["0"];
                 let preference = display["frameRate"]
                     .as_str()
@@ -666,7 +722,9 @@ impl DiPlayInput {
                     vec![]
                 };
                 self.set_video_decision(oxp_core::video_codec_policy::resolve_with_preferences(
-                    &outputs, false, v["prefersH264"].as_bool().unwrap_or(false),
+                    &outputs,
+                    false,
+                    v["prefersH264"].as_bool().unwrap_or(false),
                 ));
                 Ok(true)
             }
@@ -710,6 +768,166 @@ impl DiPlayInput {
     }
     pub fn close(&self) -> Result<()> {
         self.stop()
+    }
+}
+impl DiPlayInput {
+    fn setting_decision(setting: &str, automatic: VideoCodecDecision) -> VideoCodecDecision {
+        match setting {
+            "h264" => VideoCodecDecision {
+                codec: VideoCodec::H264,
+                reason: "setting-h264",
+            },
+            "h265" => VideoCodecDecision {
+                codec: VideoCodec::H265,
+                reason: "setting-h265",
+            },
+            _ => automatic,
+        }
+    }
+    fn initialize_display(&self, state_dir: &std::path::Path) {
+        let mut d = self.display.lock().unwrap();
+        if d.path.is_none() {
+            let path = state_dir.join("display.json");
+            d.saved = crate::display::DisplayState::load(&path);
+            d.path = Some(path);
+        }
+        let message = Message::Json(oxp_wire::display_settings(&d.saved.settings()));
+        Self::publish_locked(&mut self.state.lock().unwrap(), "display-settings", message);
+        Self::publish_locked(
+            &mut self.state.lock().unwrap(),
+            "display-view-area",
+            d.area_message(),
+        );
+    }
+    pub fn display_settings(&self) -> oxp_core::model::DisplaySettings {
+        self.display.lock().unwrap().saved.settings()
+    }
+    pub fn update_display_settings(
+        &self,
+        settings: oxp_core::model::DisplaySettings,
+    ) -> Result<()> {
+        settings.validate().map_err(std::io::Error::other)?;
+        let mut d = self.display.lock().unwrap();
+        if d.saved.settings() != settings {
+            let old = d.saved.clone();
+            d.saved.set_settings(&settings);
+            d.saved.canvas = d.saved.planned_canvas();
+            if let Err(e) = d.persist() {
+                d.saved = old;
+                return Err(e);
+            }
+            d.settings_since = Some((self.clock)());
+            let mut s = self.state.lock().unwrap();
+            if s.codec_setting != settings.video_codec {
+                s.keyframe_watch = None;
+            }
+            s.codec_setting = settings.video_codec.clone();
+            let automatic = if s.hevc_failed {
+                VideoCodecDecision {
+                    codec: VideoCodec::H264,
+                    reason: "hevc-keyframe-timeout",
+                }
+            } else {
+                s.auto_video
+            };
+            s.desired_video = Self::setting_decision(&s.codec_setting, automatic);
+        }
+        Self::publish_locked(
+            &mut self.state.lock().unwrap(),
+            "display-settings",
+            Message::Json(oxp_wire::display_settings(&settings)),
+        );
+        Ok(())
+    }
+    fn freeze_display(&self) {
+        let mut d = self.display.lock().unwrap();
+        d.freeze();
+        Self::publish_locked(
+            &mut self.state.lock().unwrap(),
+            "display-view-area",
+            d.area_message(),
+        );
+    }
+    pub(crate) fn configure_display(&self, config: &mut AirPlayDisplayConfig) {
+        self.display.lock().unwrap().config(config);
+    }
+    fn observe_display(&self, v: &serde_json::Value) -> Result<()> {
+        use crate::display::{HeadUnit, Screen, Size};
+        let report = &v["displays"]["0"];
+        let number = |v: &serde_json::Value| {
+            v.as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| (1..=32768).contains(n))
+        };
+        let Some((width, height, density_dpi)) = number(&report["widthPx"])
+            .zip(number(&report["heightPx"]))
+            .zip(number(&report["densityDpi"]))
+            .map(|((w, h), d)| (w, h, d))
+        else {
+            self.display.lock().unwrap().connected = false;
+            return Ok(());
+        };
+        let viewport = number(&report["viewport"]["widthPx"])
+            .zip(number(&report["viewport"]["heightPx"]))
+            .map(|(width, height)| Size { width, height });
+        let head = HeadUnit {
+            screen: Screen {
+                width,
+                height,
+                density_dpi,
+            },
+            viewport,
+            fullscreen: report["fullscreen"].as_bool(),
+            fullscreen_preferred: report["fullscreenPreferred"].as_bool(),
+        };
+        let limit = v["decoders"].as_array().and_then(|ds| {
+            ds.iter()
+                .filter_map(|d| {
+                    d["codecString"]
+                        .as_str()
+                        .and_then(crate::display::decoder_limit)
+                })
+                .max()
+        });
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let mut d = self.display.lock().unwrap();
+        if !d.connected {
+            d.saved.head_unit = None;
+        }
+        d.connected = true;
+        if d.saved.observe(head, limit, now) {
+            d.persist()?;
+        }
+        d.switch_due((self.clock)());
+        Ok(())
+    }
+    fn poll_view_area(&self) {
+        Self::poll_view_area_state(&self.display, &self.state, (self.clock)());
+    }
+    fn poll_view_area_state(
+        display: &Mutex<crate::display::DisplayRuntime>,
+        state: &Mutex<InputState>,
+        now: Instant,
+    ) {
+        let mut d = display.lock().unwrap();
+        let Some(index) = d.switch_due(now) else {
+            return;
+        };
+        let (id, control) = {
+            let s = state.lock().unwrap();
+            (s.current, s.control.clone().filter(|_| s.active))
+        };
+        if control.is_some_and(|c| c.show_view_area(index)) {
+            let mut s = state.lock().unwrap();
+            if s.current == id && s.active {
+                d.active = index;
+                Self::publish_locked(&mut s, "display-view-area", d.area_message());
+            }
+        }
     }
 }
 impl InputEvents for DiPlayInput {
@@ -890,7 +1108,8 @@ mod codec_tests {
         let input = DiPlayInput::new(Arc::new(JsonEvents::new(Arc::new(|_| {}))));
         let mut caps: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../OpenXPlay-Stream/spec/vectors/wire/capabilities-h264.json"
-        )).unwrap();
+        ))
+        .unwrap();
         caps["decoders"] = serde_json::json!([{"codecString":"hvc1.1.6.L120.B0","hardware":true}]);
         caps.as_object_mut().unwrap().remove("prefersH264");
         input.control(&Message::Json(caps.clone())).unwrap();
@@ -898,7 +1117,10 @@ mod codec_tests {
         assert!(input.configure_video_codec());
         caps["prefersH264"] = serde_json::json!(true);
         input.control(&Message::Json(caps.clone())).unwrap();
-        assert_eq!(input.video_status()["reason"], "main-screen-output-prefers-h264; codec-change-pending");
+        assert_eq!(
+            input.video_status()["reason"],
+            "main-screen-output-prefers-h264; codec-change-pending"
+        );
         assert!(!input.apply_requested_restart(|| panic!("cooldown")));
         input.state.lock().unwrap().codec_restarts.last_restart =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
@@ -906,7 +1128,10 @@ mod codec_tests {
         assert!(!input.configure_video_codec());
         caps["prefersH264"] = serde_json::json!(false);
         input.control(&Message::Json(caps)).unwrap();
-        assert_eq!(input.video_status()["reason"], "all-main-screen-outputs-hardware-hevc; codec-change-pending");
+        assert_eq!(
+            input.video_status()["reason"],
+            "all-main-screen-outputs-hardware-hevc; codec-change-pending"
+        );
     }
 
     #[test]
@@ -1337,5 +1562,167 @@ mod session_restart_tests {
         assert!(input.apply_requested_restart(|| {}));
         assert_eq!(input.configure_session(), (30, false));
         assert!(!input.apply_requested_restart(|| panic!("duplicate restart")));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    fn fixture() -> (DiPlayInput, Arc<Mutex<Instant>>) {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock = now.clone();
+        (
+            DiPlayInput::with_clock(
+                Arc::new(JsonEvents::new(Arc::new(|_| {}))),
+                Arc::new(move || *clock.lock().unwrap()),
+            ),
+            now,
+        )
+    }
+    fn settings(codec: &str, width: u32) -> oxp_core::model::DisplaySettings {
+        oxp_core::model::DisplaySettings {
+            resolution: "auto".into(),
+            screen_width: width,
+            video_codec: codec.into(),
+        }
+    }
+    #[test]
+    fn forced_codec_changes_coalesce_and_bypass_automatic_limiter() {
+        let (input, now) = fixture();
+        assert_eq!(input.configure_session(), (60, false));
+        input
+            .state
+            .lock()
+            .unwrap()
+            .codec_restarts
+            .record(*now.lock().unwrap());
+        input
+            .update_display_settings(settings("h264", 125))
+            .unwrap();
+        *now.lock().unwrap() += Duration::from_millis(600);
+        input
+            .update_display_settings(settings("h265", 250))
+            .unwrap();
+        assert!(!input.apply_requested_restart(|| panic!("debounce")));
+        *now.lock().unwrap() += Duration::from_millis(999);
+        assert!(!input.apply_requested_restart(|| panic!("debounce")));
+        *now.lock().unwrap() += Duration::from_millis(1);
+        assert!(input.apply_requested_restart(|| {}));
+        assert!(!input.apply_requested_restart(|| panic!("duplicate")));
+        assert_eq!(input.configure_session(), (60, true));
+        assert_eq!(input.video_status()["reason"], "setting-h265");
+        input.set_video_decision(oxp_core::video_codec_policy::resolve(&[false], false));
+        assert_eq!(input.video_status()["reason"], "setting-h265");
+        {
+            let mut s = input.state.lock().unwrap();
+            let at = *now.lock().unwrap();
+            s.current = Some(1);
+            s.keyframe_watch = Some(KeyframeWatch {
+                session: 1,
+                screen: 0,
+                requested: at,
+                last_request: at,
+                forwarded: 1,
+                logged: true,
+            });
+        }
+        *now.lock().unwrap() += Duration::from_secs(9);
+        assert!(!input.apply_requested_restart(|| panic!("forced watchdog")));
+        input
+            .update_display_settings(settings("auto", 250))
+            .unwrap();
+        *now.lock().unwrap() += Duration::from_secs(1);
+        assert!(input.apply_requested_restart(|| {}));
+        assert_eq!(input.configure_session(), (60, false));
+        assert_eq!(input.video_status()["reason"], "hardware-hevc-unavailable");
+    }
+    #[test]
+    fn display_settings_round_trip_over_in_memory_consumer_wire() {
+        let (input, _) = fixture();
+        let (tx, rx) = sync_channel(8);
+        input.state.lock().unwrap().output = Some(tx);
+        let request = Message::Json(
+            serde_json::json!({"type":"display-settings","resolution":"native","screenWidth":300,"videoCodec":"h264"}),
+        );
+        let mut bytes = Vec::new();
+        oxp_wire::write(&mut bytes, &request).unwrap();
+        let decoded = oxp_wire::read(&mut std::io::Cursor::new(bytes))
+            .unwrap()
+            .unwrap();
+        assert!(input.control(&decoded).unwrap());
+        let reply = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut bytes = Vec::new();
+        oxp_wire::write(&mut bytes, &reply).unwrap();
+        assert_eq!(
+            oxp_wire::read(&mut std::io::Cursor::new(bytes)).unwrap(),
+            Some(request)
+        );
+        assert_eq!(input.display_settings().screen_width, 300);
+        let control = Arc::new(AreaControl(Mutex::new(vec![])));
+        let id = input.begin(control).unwrap();
+        input.end(id).unwrap();
+        assert!(input
+            .state
+            .lock()
+            .unwrap()
+            .declarations
+            .contains_key("display-settings"));
+        assert!(input
+            .state
+            .lock()
+            .unwrap()
+            .declarations
+            .contains_key("display-view-area"));
+    }
+    struct AreaControl(Mutex<Vec<usize>>);
+    impl SessionControl for AreaControl {
+        fn send_touch(&self, _: &[AirPlayContact]) -> Result<bool> {
+            Ok(true)
+        }
+        fn show_view_area(&self, index: usize) -> bool {
+            self.0.lock().unwrap().push(index);
+            true
+        }
+    }
+    #[test]
+    fn planned_display_reaches_airplay_and_switch_announces_after_debounce() {
+        let (input, now) = fixture();
+        let mut caps: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../OpenXPlay-Stream/spec/vectors/wire/capabilities.json"
+        ))
+        .unwrap();
+        caps["displays"]["0"] = serde_json::json!({"widthPx":2401,"heightPx":1201,"densityDpi":280,"refreshHz":60,"safeArea":{"left":0,"right":0,"top":0,"bottom":0},"viewport":{"widthPx":1533,"heightPx":1014},"fullscreen":true,"fullscreenPreferred":true});
+        caps["decoders"] = serde_json::json!([{"codecString":"avc1.640033","hardware":true}]);
+        input.control(&Message::Json(caps.clone())).unwrap();
+        input.configure_session();
+        let mut config = AirPlayDisplayConfig::new(1280, 720);
+        input.configure_display(&mut config);
+        assert_eq!(
+            (
+                config.width_pixels,
+                config.height_pixels,
+                config.width_physical_mm
+            ),
+            (1920, 960, Some(200))
+        );
+        assert_eq!(config.view_areas.as_ref().unwrap().len(), 2);
+        let control = Arc::new(AreaControl(Mutex::new(vec![])));
+        input.begin(control.clone()).unwrap();
+        input.state.lock().unwrap().active = true;
+        assert!(!input.apply_requested_restart(|| panic!("window")));
+        *now.lock().unwrap() += Duration::from_millis(299);
+        input.poll_view_area();
+        assert!(control.0.lock().unwrap().is_empty());
+        input.control(&Message::Json(caps)).unwrap();
+        *now.lock().unwrap() += Duration::from_millis(1);
+        input.poll_view_area();
+        assert_eq!(*control.0.lock().unwrap(), vec![1]);
+        let s = input.state.lock().unwrap();
+        let Message::Json(area) = &s.declarations["display-view-area"] else {
+            panic!()
+        };
+        oxp_wire::validate_json(area).unwrap();
+        assert_eq!(area["area"]["canvasWidth"], 1920);
+        assert!(area["area"]["width"].as_u64().unwrap() < 1920);
     }
 }

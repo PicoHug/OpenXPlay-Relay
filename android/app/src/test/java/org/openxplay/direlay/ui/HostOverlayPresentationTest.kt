@@ -7,6 +7,8 @@ import com.shilapi.xcertplay.orchestration.MfiTarget
 import org.junit.Assert.*
 import org.junit.Test
 import org.openxplay.direlay.R
+import org.openxplay.direlay.relay.WebStartReason
+import org.openxplay.direlay.relay.WebStartFailure
 import org.openxplay.direlay.settings.ConnectionMode
 import org.openxplay.direlay.settings.RelaySettings
 import org.openxplay.stream.core.SessionPhase
@@ -17,6 +19,27 @@ class HostOverlayPresentationTest {
     private val home = HomeSnapshot(settings, wireless = false, permissionsReady = true, identityReady = true,
         started = true)
     private val snapshot = HostOverlaySnapshot(home, "My iPhone", listOf("https://192.168.1.2:8443/"))
+
+    @Test fun webStartReasonsKeepErrorHeadlineAndPortArgument() {
+        for (reason in WebStartFailure.entries) {
+            val result = presentHostOverlay(snapshot.copy(receiverUrls = emptyList(), home = home.copy(
+                phase = SessionPhase.ACTIVE, webReason = WebStartReason(reason, 9443))))
+            assertEquals(R.string.ui_error, result.headline)
+            assertEquals(StatusTone.ERROR, result.tone)
+            assertEquals(if (reason == WebStartFailure.PORT_BUSY) R.string.ui_web_port_busy else R.string.ui_web_start_failed,
+                result.hint)
+            assertEquals(if (reason == WebStartFailure.PORT_BUSY) listOf("9443") else emptyList<String>(), result.hintArguments)
+            assertNull(result.browserHint)
+        }
+    }
+
+    @Test fun listeningWithoutCarFacingAddressShowsNetworkInstructions() {
+        val result = presentHostOverlay(snapshot.copy(receiverUrls = emptyList(), home = home.copy(
+            webListening = true, carNetworkAvailable = false)))
+        assertEquals(R.string.ui_head_unit_network, result.browserHint)
+        assertNotEquals(StatusTone.ERROR, result.tone)
+        assertEquals(R.string.ui_browser_https_hint, presentHostOverlay(snapshot).browserHint)
+    }
 
     @Test fun waitingAndConnectingOfferCancellationAndKeepThePhoneName() {
         for (phase in listOf(null, SessionPhase.CONNECTING)) {
