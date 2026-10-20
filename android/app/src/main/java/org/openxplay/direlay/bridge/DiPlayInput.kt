@@ -252,21 +252,21 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
                 }
             }
             is ControlEvent.Key -> {
-                // 车机的方向盘/中控按键down 和 up 成对到达，而一次 CarPlay media HID
-                // 报告就代表一次完整按压，所以只在 down 边沿发送、up 边沿消费掉，
-                // 否则成对的事件会重复触发。真实车机在 CarPlay 会话之外
-                // 也会忽略媒体键，所以会话结束后这里返回 false。
+                // A head unit sends the down and up edges of a key as a pair, while one CarPlay
+                // media HID report already stands for a complete press, so send on the down edge
+                // only and swallow the up edge. A real head unit ignores media keys outside a
+                // CarPlay session, so this returns false once the session is gone.
                 if (!event.down) return true
                 synchronized(gate) {
                     if (current !== session || sink == null) false
                     else when (event.code) {
                         KeyCode.NEXT -> session.control.sendMediaButton(CarPlayMediaButton.NEXT)
                         KeyCode.PREVIOUS -> session.control.sendMediaButton(CarPlayMediaButton.PREVIOUS)
-                        // 故意不处理 PLAY_PAUSE 和 VOICE：
-                        // 播放/暂停由车机自己处理（CarPlayMediaButton.forCarPlayWindow
-                        //  只接管 next 和 previous，把 play/pause 留给车机），
-                        //  这里再转发只会和车机抢，根本到不了 iPhone；
-                        //  语音键唤起的是车机自己的助手，不需要转发给 iPhone 的 Siri。
+                        // PLAY_PAUSE and VOICE are deliberately left alone: the head unit handles
+                        // play and pause itself (CarPlayMediaButton.forCarPlayWindow only claims
+                        // next and previous), so forwarding them here would race the head unit
+                        // and never reach the phone. The voice key opens the head unit's own
+                        // assistant and does not have to start Siri on the phone.
                         else -> false
                     }
                 }
