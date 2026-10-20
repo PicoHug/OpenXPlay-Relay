@@ -42,6 +42,10 @@ import org.openxplay.direlay.relay.RelayRuntime
     Options(listOf(R.string.carlink_trace_all, R.string.carlink_trace_rtsp, R.string.carlink_trace_frames,
         R.string.carlink_trace_media, R.string.carlink_trace_link, R.string.carlink_trace_errors).map { stringResource(it) }, filter) { filter = it }
     Text(stringResource(R.string.carlink_trace_counters, lines.size, dropped, bytes))
+    // The negotiated mode is the one number that says what the head unit was told to decode:
+    // its width, height and frame rate, and the decoders the session claims. Without it the
+    // panel only shows counters, and a session stuck at 30 fps looks the same as a 60 fps one.
+    lines.lastOrNull { it.type == "Negotiation" }?.let { Text(it.json, style = MaterialTheme.typography.bodySmall) }
     lines.lastOrNull { it.type == "Media" }?.let { Text(it.json, style = MaterialTheme.typography.bodySmall) }
     failure?.let { Text(stringResource(R.string.carlink_trace_failure, it)) }
     OutlinedButton(enabled = file != null, onClick = {
