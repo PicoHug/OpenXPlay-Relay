@@ -612,7 +612,12 @@ class RelayRuntime(private val context: Context,
                 override fun state(state: ClinkState) {
                     sessionDiagnostics.state(state)
                     carlinkState = state.name
-                    if (state == ClinkState.NEGOTIATING) carlinkPins.paired()
+                    if (state == ClinkState.NEGOTIATING) {
+                        carlinkPins.paired()
+                        // Authentication succeeded, so an earlier handoff failure is history: without
+                        // this the delay stays at 15 s for the rest of the run (2026-10-19).
+                        carlinkBackoff.succeeded()
+                    }
                     // A reconnected session clears the previous failure shown on the status screens.
                     if (state == ClinkState.PLAYING) {
                         carlinkBackoff.succeeded()
@@ -641,7 +646,7 @@ class RelayRuntime(private val context: Context,
                     // User-facing failure text is selected by RelayActivity; detail retains the safe code.
                 }
                 // Output-side video diagnostics only (queue resets); session diagnostics stay in the diagnostics port.
-                override fun diagnostic(message: String) { if (message.startsWith("video ") || message.startsWith("audio ") || message.startsWith("frame ")) android.util.Log.i("DiRelayCarlink", message) }
+                override fun diagnostic(message: String) { if (message.startsWith("video ") || message.startsWith("audio ") || message.startsWith("frame ") || message.startsWith("auth ")) android.util.Log.i("DiRelayCarlink", message) }
                 override fun profileMismatch(inputCodec: String, decoders: List<String>) {
                     carlinkFailed = true
                     carlinkDetail = "Head unit cannot decode this video"

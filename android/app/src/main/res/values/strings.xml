@@ -457,6 +457,7 @@
     <string name="carlink_trace_clear">Clear traces</string>
     <string name="carlink_capture_start">Start TS capture (60 s / 64 MB)</string>
     <string name="carlink_capture_stop">Stop TS capture</string>
+    <string name="carlink_capture_share">Share captured TS</string>
     <string name="carlink_trace_failure">Trace write failed: %1$s</string>
     <string name="picture_title">CarPlay picture</string>
     <string name="picture_native">Native</string>

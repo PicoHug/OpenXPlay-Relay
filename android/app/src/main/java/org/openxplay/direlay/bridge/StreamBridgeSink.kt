@@ -42,6 +42,10 @@ class StreamBridgeSink(
     }
 
     override fun onAudioStarted(id: AudioStreamId, format: CarPlayAudioFormat, firstSample: Int) {
+        if (!AudioPolicy.forwarded(id)) {
+            Log.i("DiRelayAudio", "Ignoring system sound stream type=${id.type} audioType=${id.audioType}")
+            return
+        }
         val stream = AudioPolicy.stream(id) ?: return
         input.deliver(session) { sink ->
             audio.remove(stream)?.second?.close()
@@ -68,12 +72,14 @@ class StreamBridgeSink(
     }
 
     override fun onAudioRtp(id: AudioStreamId, format: CarPlayAudioFormat, rtp: ByteArray, sample: Int) {
+        if (!AudioPolicy.forwarded(id)) return
         val arrival = System.nanoTime() / 1000
         val stream = AudioPolicy.stream(id) ?: return
         input.deliver(session) { audio[stream]?.takeIf { it.first == id }?.second?.offer(rtp, sample, arrival) }
     }
 
     override fun onAudioStopped(id: AudioStreamId) {
+        if (!AudioPolicy.forwarded(id)) return
         val stream = AudioPolicy.stream(id) ?: return
         input.deliver(session) { sink ->
             if (audio[stream]?.first == id) {

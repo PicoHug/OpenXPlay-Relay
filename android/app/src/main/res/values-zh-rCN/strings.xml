@@ -451,6 +451,7 @@
     <string name="carlink_trace_clear">清除跟踪</string>
     <string name="carlink_capture_start">开始 TS 录制（60 秒 / 64 MB）</string>
     <string name="carlink_capture_stop">停止 TS 录制</string>
+    <string name="carlink_capture_share">分享录制的 TS</string>
     <string name="carlink_trace_failure">跟踪写入失败：%1$s</string>
     <string name="picture_title">CarPlay 画面</string>
     <string name="picture_native">原画</string>

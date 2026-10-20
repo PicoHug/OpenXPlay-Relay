@@ -58,7 +58,9 @@ internal class BleExchange(private val gatt: Gatt, private val phone: ByteArray,
         if (!success || !gatt.subscribeLocally()) { fail(); return }
         if (legacy) writeRequest() else {
             state = State.SUBSCRIBING
-            if (!gatt.subscribeCccd()) descriptorWritten(false)
+            // A refused descriptor write means this head unit cannot take the CCCD path either;
+            // report it as a subscription failure so the next attempt falls back to legacy.
+            if (!gatt.subscribeCccd()) fail(Reason.CCCD_TIMEOUT)
         }
     }
     fun descriptorWritten(success: Boolean) {
@@ -68,7 +70,7 @@ internal class BleExchange(private val gatt: Gatt, private val phone: ByteArray,
             return
         }
         if (state != State.SUBSCRIBING) return
-        if (success) writeRequest() else fail()
+        if (success) writeRequest() else fail(Reason.CCCD_TIMEOUT)
     }
     fun cccdTimeout() {
         if (state == State.SUBSCRIBING || state == State.REDISCOVERING) fail(Reason.CCCD_TIMEOUT)

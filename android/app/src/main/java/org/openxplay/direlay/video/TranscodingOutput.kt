@@ -35,6 +35,8 @@ class TranscodingOutput(
         var pipeline: VideoPipeline? = null
         var revision = 0L
         var failed = false
+        var attempts = 0
+        var startedAt = 0L
     }
     private val gate = Any()
     private val reported = mutableMapOf<ScreenId, VideoCompatibility.ReportKey>()
@@ -43,6 +45,10 @@ class TranscodingOutput(
         if (reported.put(format.screen, key) != key) report(format, decision, failed)
     }
     private val streams = mutableMapOf<ScreenId, Stream>()
+    private companion object {
+        /** Transcode restarts before a failed stream is allowed to fall back to passthrough. */
+        const val MAX_TRANSCODE_ATTEMPTS = 3
+    }
     private var capabilities: OutputCapabilities? = null
     private var host: OutputHost? = null
     private var closed = false
@@ -111,7 +117,7 @@ class TranscodingOutput(
         } else Stream(format).also { streams[screen] = it; configure(it, force = true) }
     }
 
-    private fun configure(stream: Stream, force: Boolean = false) {
+    private fun configure(stream: Stream, force: Boolean = false, retry: Boolean = false) {
         // No capability report yet: preserve the existing output's negotiation behavior.
         val decision = capabilities?.let { caps -> VideoCompatibility.decide(stream.format, caps.decoders.filter {
             (if (it.codecString.startsWith("avc1.")) VideoCodec.H264 else VideoCodec.H265) in deliveryCodecs
@@ -124,6 +130,7 @@ class TranscodingOutput(
         stream.revision++
         stream.pipeline?.close(); stream.pipeline = null
         stream.failed = false
+        if (!retry) stream.attempts = 0
         stream.decision = decision
         reportChange(stream.format, decision, false)
         if (decision.mode != VideoCompatibility.Mode.TRANSCODE) {
@@ -148,17 +155,29 @@ class TranscodingOutput(
                 if (current()) requestKeyFrame(stream.format.screen)
             }
             override fun failed(error: Exception) = locked {
-                if (current()) {
-                    stream.revision++
-                    stream.pipeline?.close(); stream.pipeline = null
-                    stream.failed = true
-                    reportChange(stream.format, decision, true)
+                if (!current()) return@locked
+                android.util.Log.w("DiRelayCarlink", "video pipeline failed attempt=${stream.attempts} " +
+                    "after=${(System.nanoTime() - stream.startedAt) / 1_000_000}ms ${error.javaClass.simpleName}: ${error.message}")
+                stream.revision++
+                stream.pipeline?.close(); stream.pipeline = null
+                stream.failed = true
+                reportChange(stream.format, decision, true)
+                // A pipeline that played for a while is not a broken configuration: give it a fresh set
+                // of attempts, otherwise two hiccups in a session end in the passthrough black screen.
+                if (stream.startedAt != 0L && System.nanoTime() - stream.startedAt > 15_000_000_000L) stream.attempts = 0
+                // The receiver rejected the input profile, so forwarding the input format here is a
+                // guaranteed black screen. Restart the transcoder a few times before giving up.
+                if (decision.mode == VideoCompatibility.Mode.TRANSCODE && stream.attempts < MAX_TRANSCODE_ATTEMPTS) {
+                    stream.attempts++
+                    configure(stream, force = true, retry = true)
+                } else {
                     inner.onVideoFormat(stream.format.screen, stream.format)
-                    requestKeyFrame(stream.format.screen)
                 }
+                requestKeyFrame(stream.format.screen)
             }
         }
         try {
+            stream.startedAt = System.nanoTime()
             stream.pipeline = factory.create(stream.format, checkNotNull(decision.target), listener)
             stream.pipeline?.start()
             // A new decoder needs an input IDR once; receiver recovery thereafter targets the encoder.

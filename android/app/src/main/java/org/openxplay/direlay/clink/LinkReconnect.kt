@@ -77,8 +77,8 @@ internal fun settleRelease(released: CompletableFuture<Unit>, steps: List<() -> 
     }
 }
 
-internal class LinkBackoff {
+internal class LinkBackoff(private val max: Long = 15_000L) {
     private var delay = 1_000L
-    @Synchronized fun next(): Long = delay.also { delay = (delay * 2).coerceAtMost(15_000) }
-    @Synchronized fun succeeded() { delay = 1_000 }
+    @Synchronized fun next(): Long = delay.also { delay = (delay * 2).coerceAtMost(max) }
+    @Synchronized fun succeeded() { delay = 1_000L }
 }

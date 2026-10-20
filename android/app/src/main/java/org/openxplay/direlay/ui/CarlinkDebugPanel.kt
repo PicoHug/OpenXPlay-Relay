@@ -59,6 +59,16 @@ import org.openxplay.direlay.relay.RelayRuntime
         if (capturing) runtime.carlinkMediaCapture.stop() else runtime.carlinkMediaCapture.start()
         capturing = runtime.carlinkMediaCapture.capturing
     }) { Text(stringResource(if (capturing) R.string.carlink_capture_stop else R.string.carlink_capture_start)) }
+    val captureDir = context.getExternalFilesDir("carlink-trace")
+    fun newestCapture() = captureDir?.listFiles { f -> f.isFile && f.extension == "ts" }?.maxByOrNull { it.lastModified() }
+    OutlinedButton(enabled = !capturing && newestCapture() != null, onClick = {
+        newestCapture()?.let { ts ->
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.carlink-trace", ts)
+            val intent = Intent(Intent.ACTION_SEND).setType("video/mp2t").putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(Intent.createChooser(intent, null))
+        }
+    }) { Text(stringResource(R.string.carlink_capture_share)) }
     LazyColumn(Modifier.fillMaxWidth().height(280.dp)) {
         items(lines.asReversed().filter { types[filter] == null || it.type == types[filter] }) {
             Text(it.json, style = MaterialTheme.typography.bodySmall)

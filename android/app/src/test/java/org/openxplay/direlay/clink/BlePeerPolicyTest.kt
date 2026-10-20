@@ -52,13 +52,15 @@ class BlePeerPolicyTest {
         next.succeeded(key, next.choice(key))
         assertEquals(1002, BlePeerPolicy(store).choice(key).requestType)
     }
-    @Test fun subscriptionTimeoutDoesNotChangeRememberedType() {
+    @Test fun subscriptionTimeoutKeepsTheTypeAndIsRememberedAcrossPolicies() {
         val store = Store()
         val policy = BlePeerPolicy(store)
         policy.succeeded("car", BlePeerPolicy.Choice(1001))
         policy.cccdTimedOut("car", policy.choice("car"))
         assertEquals(1001, policy.choice("car").requestType)
-        assertEquals(BlePeerPolicy.Choice(1001, false), BlePeerPolicy(store).choice("car"))
+        // The workaround must survive: a head unit without a working CCCD path would otherwise pay
+        // the subscription timeout plus a reconnect on every later session.
+        assertEquals(BlePeerPolicy.Choice(1001, true), BlePeerPolicy(store).choice("car"))
         store.values["bad"] = 99
         assertEquals(1002, BlePeerPolicy(store).choice("bad").requestType)
     }

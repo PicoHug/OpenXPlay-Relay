@@ -41,7 +41,9 @@ class AndroidClinkLink(context: Context, private val deviceId: String,
             if (!preferences.edit().putInt(key, type).commit()) cleanupFailure(IllegalStateException("peer_store_failed"))
         }
     })
-    private val backoff = retryBackoff
+    // Retrying inside one handoff is a GATT hiccup, not a failed session: cap it at 4 s. Sharing the
+    // session backoff here made a single failure cost 15 s on top of the session-level 15 s (2026-10-19).
+    private val backoff = LinkBackoff(max = 4_000)
     private fun retry(run: Run) {
         val delay = backoff.next()
         diagnostics.emit(ClinkDiagnostic.Retry(delay))

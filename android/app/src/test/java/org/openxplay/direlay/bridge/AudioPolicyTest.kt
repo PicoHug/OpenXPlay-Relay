@@ -17,14 +17,17 @@ class AudioPolicyTest {
             "speechrecognition" to AudioRole.VOICE, "telephony" to AudioRole.TELEPHONY,
             "default" to AudioRole.OTHER, "compatibility" to AudioRole.OTHER, "unknown" to AudioRole.OTHER)) {
             assertEquals(role, AudioPolicy.role(name))
-            for ((type, stream) in mapOf(102 to 0, 100 to 1, 101 to 2))
-                assertEquals(stream, AudioPolicy.stream(AudioStreamId(type, name)))
+            if (role == AudioRole.ALERT)
+                for (type in listOf(100, 101, 102)) assertNull(AudioPolicy.stream(AudioStreamId(type, name)))
+            else for ((type, base) in mapOf(102 to 0, 100 to 10, 101 to 20)) assertEquals(
+                base + listOf(AudioRole.MEDIA, AudioRole.VOICE, AudioRole.TELEPHONY, AudioRole.OTHER).indexOf(role),
+                AudioPolicy.stream(AudioStreamId(type, name)))
         }
         assertNull(AudioPolicy.stream(AudioStreamId(103, "media")))
         assertNull(AudioPolicy.stream(AudioStreamId(999, "media")))
     }
     @Test fun onlyCanonicalMediaAacPassesThroughAndAllOtherShapesNormalize() {
-        for (role in listOf("media", "alert", "speechrecognition", "telephony", "default", "compatibility"))
+        for (role in listOf("media", "speechrecognition", "telephony", "default", "compatibility"))
             for (codec in AudioCodecKind.entries) for (rate in listOf(16000, 44100, 48000)) for (channels in 1..2) {
                 val id = AudioStreamId(102, role)
                 val source = CarPlayAudioFormat(codec, rate, channels, 102, role)
@@ -36,6 +39,14 @@ class AudioPolicyTest {
                 assertEquals(if (role == "media") 2 else channels, normalized.channels)
                 if (role == "media") assertArrayEquals(hex("11 90"), normalized.config) else assertNull(normalized.config)
             }
+    }
+    @Test fun everyRoleOwnsItsStreamSlotSoMusicIsNeverReplaced() {
+        assertFalse(AudioPolicy.forwarded(AudioStreamId(100, "alert")))
+        for (role in listOf("media", "speechrecognition", "telephony", "default"))
+            assertTrue(AudioPolicy.forwarded(AudioStreamId(100, role)))
+        // Music, Siri and calls all arrive as type 100; each must land in a different slot.
+        val slots = listOf("media", "speechrecognition", "telephony", "default").map { AudioPolicy.stream(AudioStreamId(100, it)) }
+        assertEquals(slots.size, slots.toSet().size)
     }
     @Test fun pcmSwapPreservesInterleavingAndLeavesBorrowedDataUntouched() {
         val pcm = hex("12 34 fe dc 80 00 7f ff")

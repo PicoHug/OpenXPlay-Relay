@@ -29,6 +29,11 @@ class MediaCodecPipeline(
     private val frames = java.util.ArrayDeque<VideoFrame>()
     private var queuedBytes = 0
     private var waitingForIdr = true
+    private var waitingSince = 0L
+    private var seenIdr = false
+    private var stalled = false
+    private var recoveredAt = 0L
+    @Volatile private var pendingDepth = 0
     private var decoder: MediaCodec? = null
     private var encoder: MediaCodec? = null
     private var surface: Surface? = null
@@ -40,12 +45,27 @@ class MediaCodecPipeline(
     override fun offer(frame: VideoFrame) {
         synchronized(frames) {
             if (!running.get()) return
-            if (frames.size >= 4 || queuedBytes + frame.data.size > 8 * 1024 * 1024) {
-                frames.clear(); queuedBytes = 0; waitingForIdr = true; recovery.set(true)
+            if (frame.data.size > MAX_FRAME_BYTES) return
+            val now = System.nanoTime()
+            // The input only guarantees an IDR at session start. After that a wait for one may never
+            // end (the CarPlay source does not re-IDR on request), which used to freeze this pipeline
+            // for good at ~2 s and drop the session back to passthrough: black screen (2026-10-19).
+            if (!seenIdr) {
+                if (!frame.keyFrame) return
+                seenIdr = true; waitingForIdr = false
+            } else if (waitingForIdr) {
+                if (frame.keyFrame || now - waitingSince >= IDR_WAIT_NS) waitingForIdr = false else return
             }
-            if (frame.data.size > 4 * 1024 * 1024 || waitingForIdr && !frame.keyFrame) return
-            waitingForIdr = false
+            // Never clear the whole backlog: dropping every queued frame breaks the decoder reference
+            // chain and re-enters the keyframe wait above. Shed the oldest frames instead.
+            var shed = false
+            while (frames.isNotEmpty() && (frames.size >= MAX_QUEUED_FRAMES ||
+                    queuedBytes + frame.data.size > MAX_QUEUED_BYTES)) {
+                queuedBytes -= frames.pollFirst()!!.data.size; shed = true
+            }
             frames.addLast(frame); queuedBytes += frame.data.size
+            // A shed frame leaves a hole in the reference chain; one IDR per second repairs it.
+            if (shed && now - recoveredAt >= RECOVERY_INTERVAL_NS) { recoveredAt = now; recovery.set(true) }
         }
     }
     override fun requestKeyFrame() { sync.set(true) }
@@ -69,7 +89,8 @@ class MediaCodecPipeline(
                     putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
                 })
                 // Bound frames inside the codecs as well as at the receive boundary.
-                if (pending.size < 8) {
+                pendingDepth = pending.size
+                if (pending.size < MAX_PENDING) {
                     val available = synchronized(frames) { frames.isNotEmpty() }
                     if (available) {
                         val index = dec.dequeueInputBuffer(0)
@@ -117,9 +138,30 @@ class MediaCodecPipeline(
                         }
                     } finally { enc.releaseOutputBuffer(encoded, false) }
                 }
-                check(pending.isEmpty() || System.nanoTime() - progressAt < 5_000_000_000L) { "transcoder_stalled" }
+                // A pause between Wi-Fi batches is normal; ask the source for an IDR first and only
+                // declare the pipeline dead at 15 s. Failing here used to drop the whole session
+                // back to passthrough, which the receiver cannot decode (2026-10-19).
+                if (pending.isEmpty()) stalled = false else {
+                    val idle = System.nanoTime() - progressAt
+                    // The encoder can sit on its output until the surface is fed again. Releasing one
+                    // pending slot keeps the decoder running instead of deadlocking behind the gate above.
+                    if (idle > 400_000_000L && pending.size >= MAX_PENDING) {
+                        pending.keys.minOrNull()?.let { pending.remove(it) }
+                    }
+                    if (idle > 1_000_000_000L) {
+                        if (!stalled) {
+                            stalled = true
+                            android.util.Log.w("DiRelayCarlink", "transcoder idle ${idle / 1_000_000}ms pending=${pending.size}")
+                            listener.inputKeyFrame()
+                        }
+                        check(idle < 15_000_000_000L) { "transcoder_stalled" }
+                    } else stalled = false
+                }
             }
         } catch (failure: Exception) {
+            // The message is what tells a stall apart from a codec rejection in logcat.
+            android.util.Log.w("DiRelayCarlink", "transcoder stopped ${failure.javaClass.simpleName}: " +
+                "${failure.message} pending=$pendingDepth queued=${frames.size}")
             if (running.get()) listener.failed(failure)
         } finally {
             running.set(false)
@@ -186,6 +228,14 @@ class MediaCodecPipeline(
     }
 
     companion object {
+        /** Frames allowed outside the codecs; the oldest is shed beyond this, the queue is never wiped. */
+        private const val MAX_QUEUED_FRAMES = 16
+        private const val MAX_QUEUED_BYTES = 8 * 1024 * 1024
+        private const val MAX_FRAME_BYTES = 4 * 1024 * 1024
+        /** Longest a reset may wait for an IDR before resuming with whatever the input sends. */
+        private const val IDR_WAIT_NS = 700_000_000L
+        private const val RECOVERY_INTERVAL_NS = 1_000_000_000L
+        private const val MAX_PENDING = 8
         val factory = VideoPipeline.Factory { input, target, listener -> MediaCodecPipeline(input, target, listener) }
         fun hasHevcDecoder(): Boolean = runCatching {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { !it.isEncoder &&

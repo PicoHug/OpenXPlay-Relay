@@ -11,7 +11,24 @@ import org.openxplay.stream.core.AudioCodec
 import org.openxplay.stream.core.AudioFormat
 
 internal object AudioPolicy {
-    fun stream(id: AudioStreamId): Int? = when (id.type) { 102 -> 0; 100 -> 1; 101 -> 2; else -> null }
+    // CarPlay sends music, Siri, calls and system sounds as type 100 and distinguishes them only by
+    // audioType. Mapping the type alone made every one of them share slot 1: a keyboard click closed
+    // the music stream and a Siri reply could not resume it (2026-10-19). Each role now owns its own
+    // slot, so a second stream never replaces the one that is already playing. These numbers stay
+    // inside the bridge; nothing about them reaches the head unit.
+    private const val BASE_BUFFERED = 0   // type 102
+    private const val BASE_MAIN = 10      // type 100
+    private const val BASE_ALT = 20       // type 101
+    fun stream(id: AudioStreamId): Int? {
+        val base = when (id.type) { 102 -> BASE_BUFFERED; 100 -> BASE_MAIN; 101 -> BASE_ALT; else -> return null }
+        return base + when (role(id.audioType)) {
+            AudioRole.MEDIA -> 0
+            AudioRole.VOICE -> 1
+            AudioRole.TELEPHONY -> 2
+            AudioRole.OTHER -> 3
+            AudioRole.ALERT -> return null
+        }
+    }
     fun role(type: String): AudioRole = when (type) {
         "media" -> AudioRole.MEDIA
         "alert" -> AudioRole.ALERT
@@ -19,6 +36,11 @@ internal object AudioPolicy {
         "telephony" -> AudioRole.TELEPHONY
         else -> AudioRole.OTHER
     }
+    /**
+     * System sounds (keyboard clicks, alerts) are mixed by a real head unit. Forwarding them makes
+     * Carlink duck the media channel, and they must never take a stream slot either.
+     */
+    fun forwarded(id: AudioStreamId): Boolean = role(id.audioType) != AudioRole.ALERT
     fun passthrough(id: AudioStreamId, source: CarPlayAudioFormat): Boolean =
         role(id.audioType) == AudioRole.MEDIA && source.codec == AudioCodecKind.AAC_LC &&
             source.sampleRate == 48_000 && source.channels == 2
