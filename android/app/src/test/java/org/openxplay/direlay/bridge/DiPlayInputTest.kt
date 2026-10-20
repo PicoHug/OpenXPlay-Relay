@@ -4,6 +4,7 @@
 package org.openxplay.direlay.bridge
 
 import com.shilapi.xcertplay.airplay.AirPlayContact
+import com.shilapi.xcertplay.airplay.CarPlayMediaButton
 import com.shilapi.xcertplay.airplay.MediaSink
 import com.shilapi.xcertplay.airplay.SessionControl
 import org.junit.jupiter.api.Assertions.*
@@ -56,7 +57,8 @@ class DiPlayInputTest {
             assertEquals(setOf(ScreenId.MAIN), input.capabilities.screens)
             assertTrue(input.capabilities.touch)
             assertTrue(input.capabilities.keyFrameRequests)
-            assertTrue(input.capabilities.keys.isEmpty())
+            assertEquals(setOf(KeyCode.NEXT, KeyCode.PREVIOUS),
+                input.capabilities.keys)
             assertFalse(input.capabilities.microphone)
             assertEquals(ReconfigureCost.RESTART_SESSION, input.capabilities.reconfigure)
             assertEquals(ReconfigureResult.RESTART_SESSION, input.reconfigure(configuration))
@@ -72,6 +74,30 @@ class DiPlayInputTest {
             assertFalse(input.control(ControlEvent.MicPacket(0, byteArrayOf(), 0, origin)))
             input.stop()
             assertFalse(input.control(ControlEvent.Touch(ScreenId.MAIN, contacts, origin)))
+        }
+    }
+
+    @Test fun mediaKeysReachTheCarPlayHidChannelOncePerPress() {
+        val buttons = mutableListOf<Int>()
+        DiPlayInput().use { input ->
+            input.start(configuration, CapturingInputSink())
+            StreamBridgeSink(input, object : MediaSink {}, object : SessionControl {
+                override fun sendTouch(contacts: List<AirPlayContact>) = true
+                override fun sendMediaButton(index: Int): Boolean { buttons.add(index); return true }
+            })
+            // The head unit sends a down/up pair per key; CarPlay needs one press per pair.
+            for (code in listOf(KeyCode.NEXT, KeyCode.PREVIOUS)) {
+                assertTrue(input.control(ControlEvent.Key(code, true, origin)))
+                assertTrue(input.control(ControlEvent.Key(code, false, origin)))
+            }
+            assertEquals(listOf(CarPlayMediaButton.NEXT, CarPlayMediaButton.PREVIOUS), buttons)
+            // The head unit handles play/pause itself and its voice key opens its own assistant,
+            // so neither is forwarded to the phone.
+            assertFalse(input.capabilities.keys.contains(KeyCode.PLAY_PAUSE))
+            assertFalse(input.capabilities.keys.contains(KeyCode.VOICE))
+            assertFalse(input.control(ControlEvent.Key(KeyCode.PLAY_PAUSE, true, origin)))
+            assertFalse(input.control(ControlEvent.Key(KeyCode.VOICE, true, origin)))
+            assertFalse(input.control(ControlEvent.Key(KeyCode.HOME, true, origin)))
         }
     }
 

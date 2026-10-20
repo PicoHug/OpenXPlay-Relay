@@ -6,6 +6,7 @@ package org.openxplay.direlay.bridge
 import android.util.Log
 import kotlinx.coroutines.flow.asStateFlow
 import com.shilapi.xcertplay.airplay.AirPlayContact
+import com.shilapi.xcertplay.airplay.CarPlayMediaButton
 import com.shilapi.xcertplay.airplay.SessionControl
 import org.openxplay.stream.core.*
 import java.util.concurrent.ArrayBlockingQueue
@@ -17,7 +18,7 @@ import java.util.concurrent.TimeUnit
 class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val restartCarPlay: () -> Unit = {}) : ProjectionInput, AutoCloseable {
     @Volatile override var capabilities = InputCapabilities(
         setOf(VideoCodec.H264, VideoCodec.H265), setOf(ScreenId.MAIN),
-        touch = true, keys = emptySet(), microphone = false,
+        touch = true, keys = setOf(KeyCode.NEXT, KeyCode.PREVIOUS), microphone = false,
         keyFrameRequests = true, reconfigure = ReconfigureCost.RESTART_SESSION,
     )
         private set
@@ -217,6 +218,26 @@ class DiPlayInput(private val applyFrameRate: (Int) -> Unit = {}, private val re
                 } catch (_: RejectedExecutionException) {
                     recordKeyframe("Screen ${event.screen.value}: queue full")
                     false
+                }
+            }
+            is ControlEvent.Key -> {
+                // 车机的方向盘/中控按键down 和 up 成对到达，而一次 CarPlay media HID
+                // 报告就代表一次完整按压，所以只在 down 边沿发送、up 边沿消费掉，
+                // 否则成对的事件会重复触发。真实车机在 CarPlay 会话之外
+                // 也会忽略媒体键，所以会话结束后这里返回 false。
+                if (!event.down) return true
+                synchronized(gate) {
+                    if (current !== session || sink == null) false
+                    else when (event.code) {
+                        KeyCode.NEXT -> session.control.sendMediaButton(CarPlayMediaButton.NEXT)
+                        KeyCode.PREVIOUS -> session.control.sendMediaButton(CarPlayMediaButton.PREVIOUS)
+                        // 故意不处理 PLAY_PAUSE 和 VOICE：
+                        // 播放/暂停由车机自己处理（CarPlayMediaButton.forCarPlayWindow
+                        //  只接管 next 和 previous，把 play/pause 留给车机），
+                        //  这里再转发只会和车机抢，根本到不了 iPhone；
+                        //  语音键唤起的是车机自己的助手，不需要转发给 iPhone 的 Siri。
+                        else -> false
+                    }
                 }
             }
             else -> false
