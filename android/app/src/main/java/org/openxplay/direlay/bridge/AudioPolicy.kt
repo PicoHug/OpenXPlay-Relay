@@ -19,8 +19,6 @@ internal object AudioPolicy {
     private const val BASE_BUFFERED = 0   // type 102
     private const val BASE_MAIN = 10      // type 100
     private const val BASE_ALT = 20       // type 101
-    /** CarPlay's main audio stream: music, Siri and calls all arrive here. */
-    private const val MAIN_AUDIO = 100
     fun stream(id: AudioStreamId): Int? {
         val base = when (id.type) { 102 -> BASE_BUFFERED; 100 -> BASE_MAIN; 101 -> BASE_ALT; else -> return null }
         return base + when (role(id.audioType)) {
@@ -39,24 +37,6 @@ internal object AudioPolicy {
         else -> AudioRole.OTHER
     }
     /**
-     * Whether a stream belongs on the head unit's voice channel.
-     *
-     * An app call (WeChat) arrives as type 100 with audioType "default", the same pair a system
-     * sound uses, and the head unit played nothing for it (2026-10-20, upstream #718). The stream
-     * type separates the two: type 100 is the main stream that carries music, Siri and calls, while
-     * type 102 is the buffered stream that carries short system sounds such as keyboard clicks.
-     * A type 100 stream that is neither music nor an alert is therefore a call or an assistant,
-     * and it opens the voice channel; a type 102 stream stays out of it.
-     *
-     * The slot stays keyed on the audioType, so a call and a native telephony call never replace
-     * each other; only the routing decision uses the type.
-     */
-    fun voiceChannel(id: AudioStreamId): Boolean = when (role(id.audioType)) {
-        AudioRole.VOICE, AudioRole.TELEPHONY -> true
-        AudioRole.OTHER -> id.type == MAIN_AUDIO
-        else -> false
-    }
-    /**
      * System sounds (keyboard clicks, alerts) are mixed by a real head unit. Forwarding them makes
      * Carlink duck the media channel, and they must never take a stream slot either.
      */
@@ -66,12 +46,9 @@ internal object AudioPolicy {
             source.sampleRate == 48_000 && source.channels == 2
     fun format(id: AudioStreamId, source: CarPlayAudioFormat): AudioFormat {
         val role = role(id.audioType)
-        // A type 100 stream that is not music is a call or an assistant. It keeps its own slot
-        // but is reported as a telephony role, so the head unit's voice channel carries it.
-        val reported = if (role == AudioRole.OTHER && voiceChannel(id)) AudioRole.TELEPHONY else role
         return if (role == AudioRole.MEDIA) AudioFormat(requireNotNull(stream(id)), role,
             AudioCodec.AAC_LC, 48_000, 2, byteArrayOf(0x11, 0x90.toByte()))
-        else AudioFormat(requireNotNull(stream(id)), reported, AudioCodec.PCM_S16LE, source.sampleRate, source.channels)
+        else AudioFormat(requireNotNull(stream(id)), role, AudioCodec.PCM_S16LE, source.sampleRate, source.channels)
     }
     fun swap(pcm: ByteArray): ByteArray {
         require(pcm.size % 2 == 0)

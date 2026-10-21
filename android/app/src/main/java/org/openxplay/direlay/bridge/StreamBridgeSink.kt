@@ -42,13 +42,6 @@ class StreamBridgeSink(
     }
 
     override fun onAudioStarted(id: AudioStreamId, format: CarPlayAudioFormat, firstSample: Int) {
-        // Every role is logged: a phone call that the head unit plays through the media channel
-        // arrives with an audioType that is not "telephony", and the role alone does not tell
-        // which streams the user is meant to hear (2026-10-20).
-        Log.i("DiRelayAudio", "Audio stream type=${id.type} audioType=${id.audioType} " +
-            "role=${AudioPolicy.role(id.audioType)} voice=${AudioPolicy.voiceChannel(id)} " +
-            "codec=${format.codec} rate=${format.sampleRate} " +
-            "channels=${format.channels} forwarded=${AudioPolicy.forwarded(id)}")
         if (!AudioPolicy.forwarded(id)) {
             Log.i("DiRelayAudio", "Ignoring system sound stream type=${id.type} audioType=${id.audioType}")
             return
