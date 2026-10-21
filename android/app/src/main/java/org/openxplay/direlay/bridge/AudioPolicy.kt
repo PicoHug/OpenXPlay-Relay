@@ -54,6 +54,16 @@ internal object AudioPolicy {
         else -> false
     }
     /**
+     * Whether the phone's own microphone serves this stream.
+     *
+     * An app call (WeChat) is the one case where the head unit's microphone is the wrong one: the
+     * caller is on the phone, so the phone's own microphone is what the other end expects, and a
+     * head unit microphone would pick up the cabin instead. A native call and Siri keep the head
+     * unit's microphone, which is where the driver is (2026-10-21).
+     */
+    fun usesPhoneMicrophone(id: AudioStreamId): Boolean =
+        role(id.audioType) == AudioRole.OTHER && id.type == MAIN_AUDIO
+    /**
      * System sounds (keyboard clicks, alerts) are mixed by a real head unit. Forwarding them makes
      * Carlink duck the media channel, and they must never take a stream slot either.
      */

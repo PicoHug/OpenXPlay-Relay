@@ -94,7 +94,7 @@ class StreamBridgeSink(
         input.deliver(session) { sink ->
             stopMicrophone(stream, sink)
             microphoneIds[stream] = id
-            if (microphoneSource() == MicrophoneSource.THIS_DEVICE) {
+            if (microphoneSource() == MicrophoneSource.THIS_DEVICE || AudioPolicy.usesPhoneMicrophone(id)) {
                 localMicrophones[stream] = id to DelegatedMicrophone(delegate, id, config, microphoneTails[stream]).also {
                     microphoneTails[stream] = it; it.start()
                 }

@@ -68,6 +68,17 @@ class AudioPolicyTest {
         // The prompt keeps its own slot, so it never replaces the music.
         assertNotEquals(AudioPolicy.stream(AudioStreamId(100, "media")), AudioPolicy.stream(prompt))
     }
+    @Test fun anAppCallUsesThePhoneMicrophoneAndSiriKeepsTheHeadUnitOne() {
+        // An app call is the one stream the phone's own microphone serves: the caller is on the
+        // phone, and a head unit microphone would pick up the cabin (2026-10-21).
+        assertTrue(AudioPolicy.usesPhoneMicrophone(AudioStreamId(100, "default")))
+        // Siri and a native call keep the head unit's microphone, which is where the driver is.
+        assertFalse(AudioPolicy.usesPhoneMicrophone(AudioStreamId(100, "speechrecognition")))
+        assertFalse(AudioPolicy.usesPhoneMicrophone(AudioStreamId(100, "telephony")))
+        assertFalse(AudioPolicy.usesPhoneMicrophone(AudioStreamId(100, "media")))
+        // A buffered system sound is not a call at all.
+        assertFalse(AudioPolicy.usesPhoneMicrophone(AudioStreamId(102, "default")))
+    }
     @Test fun pcmSwapPreservesInterleavingAndLeavesBorrowedDataUntouched() {
         val pcm = hex("12 34 fe dc 80 00 7f ff")
         assertArrayEquals(hex("34 12 dc fe 00 80 ff 7f"), AudioPolicy.swap(pcm))
