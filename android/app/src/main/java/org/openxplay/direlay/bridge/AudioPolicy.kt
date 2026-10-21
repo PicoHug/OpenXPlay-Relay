@@ -19,6 +19,8 @@ internal object AudioPolicy {
     private const val BASE_BUFFERED = 0   // type 102
     private const val BASE_MAIN = 10      // type 100
     private const val BASE_ALT = 20       // type 101
+    /** CarPlay's main audio stream: music, Siri, calls and navigation prompts all arrive here. */
+    private const val MAIN_AUDIO = 100
     fun stream(id: AudioStreamId): Int? {
         val base = when (id.type) { 102 -> BASE_BUFFERED; 100 -> BASE_MAIN; 101 -> BASE_ALT; else -> return null }
         return base + when (role(id.audioType)) {
@@ -37,6 +39,21 @@ internal object AudioPolicy {
         else -> AudioRole.OTHER
     }
     /**
+     * Whether a stream is played on the head unit's speakers.
+     *
+     * A navigation prompt and an app call both arrive as type 100 with audioType "default" and
+     * neither is music. A head unit plays a turn instruction over the music and plays the far end
+     * of a call on its own speakers, so both belong on the media channel, not on the voice
+     * channel: opening the voice channel makes the head unit duck or pause the music (2026-10-21).
+     * The buffered stream (type 102) carries short system sounds such as keyboard clicks, which a
+     * head unit mixes itself, so it stays out.
+     */
+    fun playedOnHeadUnit(id: AudioStreamId): Boolean = when (role(id.audioType)) {
+        AudioRole.MEDIA -> true
+        AudioRole.OTHER -> id.type == MAIN_AUDIO
+        else -> false
+    }
+    /**
      * System sounds (keyboard clicks, alerts) are mixed by a real head unit. Forwarding them makes
      * Carlink duck the media channel, and they must never take a stream slot either.
      */
@@ -46,7 +63,11 @@ internal object AudioPolicy {
             source.sampleRate == 48_000 && source.channels == 2
     fun format(id: AudioStreamId, source: CarPlayAudioFormat): AudioFormat {
         val role = role(id.audioType)
-        return if (role == AudioRole.MEDIA) AudioFormat(requireNotNull(stream(id)), role,
+        // Everything the head unit plays is delivered as AAC at 48 kHz in stereo, because the
+        // transport carries one audio PID and the head unit decodes AAC there. A navigation prompt
+        // arrives as 8 kHz PCM and an app call as PCM as well; both are resampled and encoded on
+        // the way out. The voice channel keeps PCM, which is what it expects.
+        return if (playedOnHeadUnit(id)) AudioFormat(requireNotNull(stream(id)), role,
             AudioCodec.AAC_LC, 48_000, 2, byteArrayOf(0x11, 0x90.toByte()))
         else AudioFormat(requireNotNull(stream(id)), role, AudioCodec.PCM_S16LE, source.sampleRate, source.channels)
     }

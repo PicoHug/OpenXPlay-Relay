@@ -48,6 +48,26 @@ class AudioPolicyTest {
         val slots = listOf("media", "speechrecognition", "telephony", "default").map { AudioPolicy.stream(AudioStreamId(100, it)) }
         assertEquals(slots.size, slots.toSet().size)
     }
+    @Test fun aNavigationPromptAndAnAppCallPlayOnTheHeadUnitOverTheMusic() {
+        // A navigation prompt and an app call both arrive as type 100 with audioType "default".
+        // The head unit plays them on its own speakers, over the music, so they belong on the
+        // media channel and must be delivered as AAC like the music is (2026-10-21).
+        val prompt = AudioStreamId(100, "default")
+        assertTrue(AudioPolicy.playedOnHeadUnit(prompt))
+        val source = CarPlayAudioFormat(AudioCodecKind.LPCM, 8000, 1, 100, "default")
+        val format = AudioPolicy.format(prompt, source)
+        assertEquals(AudioCodec.AAC_LC, format.codec)
+        assertEquals(48000, format.sampleRate)
+        assertEquals(2, format.channels)
+        // The buffered stream carries short system sounds; a head unit mixes them itself.
+        assertFalse(AudioPolicy.playedOnHeadUnit(AudioStreamId(102, "default")))
+        // Siri and a native call keep the voice channel, and the music keeps the media channel.
+        assertFalse(AudioPolicy.playedOnHeadUnit(AudioStreamId(100, "speechrecognition")))
+        assertFalse(AudioPolicy.playedOnHeadUnit(AudioStreamId(100, "telephony")))
+        assertTrue(AudioPolicy.playedOnHeadUnit(AudioStreamId(100, "media")))
+        // The prompt keeps its own slot, so it never replaces the music.
+        assertNotEquals(AudioPolicy.stream(AudioStreamId(100, "media")), AudioPolicy.stream(prompt))
+    }
     @Test fun pcmSwapPreservesInterleavingAndLeavesBorrowedDataUntouched() {
         val pcm = hex("12 34 fe dc 80 00 7f ff")
         assertArrayEquals(hex("34 12 dc fe 00 80 ff 7f"), AudioPolicy.swap(pcm))

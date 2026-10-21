@@ -31,7 +31,10 @@ internal class RelayAudioStream(
     private val running = AtomicBoolean(true)
     private val clock = AudioClock(source.rtpClockRate)
     private val passthrough = AudioPolicy.passthrough(id, source)
-    private val media = AudioPolicy.role(id.audioType) == AudioRole.MEDIA
+    // A stream the head unit plays is encoded to AAC for the transport's single audio PID, the
+    // same way the music is. A navigation prompt and an app call reach the head unit that way, so
+    // the head unit plays them over the music instead of ducking it.
+    private val media = AudioPolicy.playedOnHeadUnit(id)
     private val worker = Thread({ run() }, "direlay-audio-${id.type}").apply { isDaemon = true }
     fun start() = worker.start()
     fun offer(rtp: ByteArray, sample: Int, arrivalUs: Long) {
