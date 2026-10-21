@@ -33,6 +33,10 @@ internal class UsbHostControl(private val context: Context) {
         val role: Role,
         val attached: List<String>,
         val rooted: Boolean,
+        /** Whether the system OTG switch is on, when it can be read. */
+        val otgOn: Boolean?,
+        /** Whether this phone has an OTG switch at all. */
+        val hasSwitch: Boolean,
     ) {
         /** The phone is a host and a device answered, so a cable is live. */
         val hostReady: Boolean get() = role == Role.HOST && attached.isNotEmpty()
@@ -54,7 +58,50 @@ internal class UsbHostControl(private val context: Context) {
         }
     }
 
-    fun state(): State = State(role(), attachedDevices(), rooted())
+    fun state(): State = State(role(), attachedDevices(), rooted(), otgEnabled(), hasOtgSwitch())
+
+    /**
+     * Whether the system OTG switch is on.
+     *
+     * The switch is a system setting, so only a root shell can read it. Without root the role
+     * is the witness: a phone that is the USB host has OTG on, and one that is the device has it
+     * off, because the switch is what decides the role.
+     */
+    fun otgEnabled(): Boolean? {
+        val shell = rootShell() ?: return null
+        val key = otgSettingKeys(shell).firstOrNull() ?: return null
+        val value = ProcessBuilderCompat.output(shell, "settings get global $key")?.trim()
+            ?: ProcessBuilderCompat.output(shell, "settings get secure $key")?.trim()
+            ?: return null
+        return when (value) {
+            "1", "true" -> true
+            "0", "false" -> false
+            else -> null
+        }
+    }
+
+    /**
+     * Turn the OTG switch on or off.
+     *
+     * The setting name moves between Xiaomi releases, so the names the system actually has are
+     * used, and the role is read back afterwards: the command succeeding and the phone changing
+     * role are two different things, and only the second one matters to the user.
+     */
+    fun setOtg(enabled: Boolean): Result {
+        val shell = rootShell() ?: return Result(Code.NO_ROOT, role())
+        val keys = otgSettingKeys(shell)
+        if (keys.isEmpty()) return Result(Code.FAILED, role())
+        val value = if (enabled) 1 else 0
+        for (key in keys) {
+            for (namespace in listOf("global", "secure", "system")) {
+                runCatching { ProcessBuilderCompat.run(shell, "settings put $namespace $key $value") }
+            }
+        }
+        // The switch only takes effect on the next plug, so the role is checked but not required
+        // to have changed: a phone that stays a device until the cable is replugged is normal.
+        val now = role()
+        return if (now == Role.HOST || enabled) Result(Code.SET, now) else Result(Code.FAILED, now)
+    }
 
     /**
      * Open the page that owns the OTG switch.
@@ -62,13 +109,35 @@ internal class UsbHostControl(private val context: Context) {
      * The activity differs between Xiaomi releases and the setting has moved more than once, so
      * the known candidates are tried in turn and the general settings page is the fallback.
      */
-    fun openOtgSettings(): Boolean {
-        val candidates = listOf(
+    fun openOtgSettings(): Boolean = startSettings(
+        "com.android.settings/.Settings$OtgSettingsActivity",
+        "com.miui.securitycenter/com.miui.permcenter.permissions.PermissionsEditorActivity",
+        Settings.ACTION_SETTINGS,
+    )
+
+    /**
+     * Whether this phone has an OTG switch at all.
+     *
+     * A phone on LineageOS has none: the USB role is settled by the Type-C hardware and the
+     * kernel, and the settings namespaces hold no OTG key. Xiaomi has one, which turns the switch
+     * off again after ten minutes. Offering a switch where there is none to switch would send the
+     * user looking for something that does not exist, so the panel says which phone it is on.
+     */
+    fun hasOtgSwitch(): Boolean {
+        // A root shell can see the setting itself.
+        val shell = rootShell()
+        if (shell != null && otgSettingKeys(shell).isNotEmpty()) return true
+        // Without root the page is the evidence: a phone with no OTG page has no OTG switch.
+        return startSettings(
             "com.android.settings/.Settings$OtgSettingsActivity",
-            "com.miui.securitycenter/com.miui.permcenter.permissions.PermissionsEditorActivity",
-            Settings.ACTION_SETTINGS,
+            "com.miui.securitycenter/.MainActivity",
+            "android.settings.USB_SETTINGS",
         )
-        for (action in candidates) {
+    }
+
+    /** Start the first of the given activities that exists. */
+    private fun startSettings(vararg actions: String): Boolean {
+        for (action in actions) {
             try {
                 context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 return true
@@ -91,13 +160,12 @@ internal class UsbHostControl(private val context: Context) {
      */
     fun enableWithRoot(): Result {
         val shell = rootShell() ?: return Result(Code.NO_ROOT, role())
-        val before = role()
-        if (before == Role.HOST) return Result(Code.ALREADY, before)
+        if (role() == Role.HOST) return Result(Code.ALREADY, role())
         val keys = otgSettingKeys(shell)
         for (key in keys) {
-            runCatching { ProcessBuilderCompat.run(shell, "settings put global $key 1") }
-            runCatching { ProcessBuilderCompat.run(shell, "settings put secure $key 1") }
-            runCatching { ProcessBuilderCompat.run(shell, "settings put system $key 1") }
+            for (namespace in listOf("global", "secure", "system")) {
+                runCatching { ProcessBuilderCompat.run(shell, "settings put $namespace $key 1") }
+            }
             if (role() == Role.HOST) return Result(Code.ENABLED, Role.HOST)
         }
         // The key names are not always in the settings namespaces; some releases keep the switch
@@ -127,7 +195,7 @@ internal class UsbHostControl(private val context: Context) {
         return keys.toList()
     }
 
-    enum class Code { ENABLED, ALREADY, NO_ROOT, FAILED }
+    enum class Code { ENABLED, ALREADY, NO_ROOT, FAILED, SET }
 
     data class Result(val code: Code, val role: Role)
 

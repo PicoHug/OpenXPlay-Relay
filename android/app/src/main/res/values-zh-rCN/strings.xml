@@ -283,6 +283,11 @@
     <string name="direlay_density">密度（dpi）</string>
     <string name="direlay_fps">每秒帧数</string>
     <string name="direlay_play_audio">在此设备播放 CarPlay 音频</string>
+    <string name="usb_otg_no_switch">本机没有 OTG 开关（LineageOS 由 Type-C 硬件自动决定）</string>
+    <string name="usb_otg_replug_hint">CC 协商成了被充电的一方：拔插一次线缆，或换个插口方向。</string>
+    <string name="usb_otg_toggle">OTG（用的时候开，不用时关）</string>
+    <string name="usb_otg_set">已写入系统设置</string>
+    <string name="usb_otg_open_system_page">请在系统设置里切换 OTG 开关</string>
     <string name="usb_otg_heading">USB 有线连接 iPhone</string>
     <string name="usb_otg_role">当前 USB 角色：%1$s</string>
     <string name="usb_otg_role_host">Host（手机是主机，可以读 iPhone）</string>

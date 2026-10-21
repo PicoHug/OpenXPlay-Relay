@@ -3,12 +3,10 @@
 // Created by riko chen on 2026-10-21
 package org.openxplay.direlay.ui
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,19 +24,24 @@ import org.openxplay.direlay.R
 import org.openxplay.direlay.bridge.UsbHostControl
 
 /**
- * The phone's USB role, with the switch that changes it.
+ * The phone's USB role and the OTG switch that decides it.
  *
  * A phone that is a USB device charges the iPhone it is plugged into, and the iPhone sends it
- * nothing. The OTG switch in the system settings makes the phone the host instead. It is a system
- * setting, so this panel reports the role, opens the page that owns the switch, and offers a root
- * shell on a rooted phone (2026-10-21).
+ * nothing, so CarPlay over the cable never starts. The OTG switch in the system settings makes
+ * the phone the host instead. It is a system setting, so an ordinary app cannot write it: it
+ * needs MANAGE_USB or WRITE_SECURE_SETTINGS, which only a platform-signed app or a root shell has
+ * (2026-10-21).
+ *
+ * On a rooted phone the switch is read and written here, so the user can turn OTG on while the
+ * cable is in use and turn it off again afterwards, which leaves the phone's charging behaviour
+ * the way it was. Without root the switch still shows the role and opens the system page.
  */
 @Composable fun UsbHostPanel() {
     val context = LocalContext.current
     val control = remember(context) { UsbHostControl(context.applicationContext) }
     var state by remember { mutableStateOf<UsbHostControl.State?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf<Boolean?>(null) }
 
     suspend fun refresh() {
         state = withContext(Dispatchers.IO) { control.state() }
@@ -46,7 +49,16 @@ import org.openxplay.direlay.bridge.UsbHostControl
     LaunchedEffect(Unit) { refresh() }
 
     val current = state
+    // The switch shows the system setting when it can be read. Without root the role is the
+    // witness: the phone is the host exactly when the switch is on.
+    val otgOn = current?.otgOn ?: (current?.role == UsbHostControl.Role.HOST)
+    val hasSwitch = current?.hasSwitch == true
     SmallHeading(stringResource(R.string.usb_otg_heading))
+    if (hasSwitch) {
+        Toggle(stringResource(R.string.usb_otg_toggle), otgOn) { want -> pending = want }
+    } else {
+        Text(stringResource(R.string.usb_otg_no_switch), style = MaterialTheme.typography.bodySmall)
+    }
     Text(
         stringResource(
             R.string.usb_otg_role,
@@ -67,36 +79,34 @@ import org.openxplay.direlay.bridge.UsbHostControl
         overflow = TextOverflow.Ellipsis
     )
     if (current?.role == UsbHostControl.Role.DEVICE) {
-        Text(stringResource(R.string.usb_otg_charging_hint), style = MaterialTheme.typography.bodySmall)
+        Text(
+            stringResource(if (hasSwitch) R.string.usb_otg_charging_hint else R.string.usb_otg_replug_hint),
+            style = MaterialTheme.typography.bodySmall
+        )
     }
     message?.let {
         Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
     }
-    Column {
-        TextButton(onClick = {
-            if (!control.openOtgSettings()) message = context.getString(R.string.usb_otg_no_settings_page)
-        }) { Text(stringResource(R.string.usb_otg_open_settings)) }
+    // The switch is acted on once: on a rooted phone the system setting is written, otherwise the
+    // system page is opened, because that is the only place the switch can be changed.
+    LaunchedEffect(pending) {
+        val want = pending ?: return@LaunchedEffect
+        pending = null
+        message = null
         if (current?.rooted == true) {
-            TextButton(enabled = !busy, onClick = {
-                busy = true
-                message = null
-            }) { Text(stringResource(R.string.usb_otg_enable_root)) }
-        }
-    }
-    // A root attempt and a settings trip both end with a refresh, so the panel shows the result.
-    LaunchedEffect(busy, message) {
-        if (busy) {
-            val result = withContext(Dispatchers.IO) { control.enableWithRoot() }
+            val result = withContext(Dispatchers.IO) { control.setOtg(want) }
             message = context.getString(
                 when (result.code) {
-                    UsbHostControl.Code.ENABLED -> R.string.usb_otg_root_enabled
-                    UsbHostControl.Code.ALREADY -> R.string.usb_otg_root_already
+                    UsbHostControl.Code.SET -> R.string.usb_otg_set
                     UsbHostControl.Code.NO_ROOT -> R.string.usb_otg_root_unavailable
-                    UsbHostControl.Code.FAILED -> R.string.usb_otg_root_failed
+                    else -> R.string.usb_otg_root_failed
                 }
             )
-            busy = false
-            refresh()
+        } else {
+            message = context.getString(
+                if (control.openOtgSettings()) R.string.usb_otg_open_system_page else R.string.usb_otg_no_settings_page
+            )
         }
+        refresh()
     }
 }

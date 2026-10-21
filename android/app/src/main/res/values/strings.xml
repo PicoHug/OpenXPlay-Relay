@@ -86,6 +86,11 @@
     <string name="direlay_band_5">5 GHz</string>
     <string name="direlay_hotspot_channel">Car-hotspot channel (0 for automatic)</string>
     <string name="direlay_play_audio">Play CarPlay audio on this device</string>
+    <string name="usb_otg_no_switch">This phone has no OTG switch (on LineageOS the Type-C hardware decides)</string>
+    <string name="usb_otg_replug_hint">The cable negotiated as the device being charged: replug it, or try the other way round.</string>
+    <string name="usb_otg_toggle">OTG (on while in use, off afterwards)</string>
+    <string name="usb_otg_set">The system setting was written</string>
+    <string name="usb_otg_open_system_page">Toggle the OTG switch in the system settings</string>
     <string name="usb_otg_heading">USB wired iPhone</string>
     <string name="usb_otg_role">USB role: %1$s</string>
     <string name="usb_otg_role_host">Host (the phone reads the iPhone)</string>
