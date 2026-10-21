@@ -201,6 +201,7 @@ fun developerView(runtime: RelayRuntime): DeveloperView {
         Toggle(stringResource(R.string.direlay_play_audio), draft.playCarPlayAudio) { draft = draft.copy(playCarPlayAudio = it) }
         SmallHeading(stringResource(R.string.direlay_microphone_source))
         Options(listOf(stringResource(R.string.direlay_head_unit), stringResource(R.string.direlay_this_device)), MicrophoneSource.entries.indexOf(draft.microphoneSource)) { draft = draft.copy(microphoneSource = MicrophoneSource.entries[it]) }
+        UsbHostPanel()
         SmallHeading(stringResource(R.string.dev_outputs))
         SettingField(stringResource(R.string.dev_port), port, if (invalidNumber) R.string.settings_advanced_error else null, number = true) { port = it }
         SettingField(stringResource(R.string.direlay_carlink_model), draft.carlinkDeviceModel) { draft = draft.copy(carlinkDeviceModel = it) }
